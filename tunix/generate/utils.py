@@ -652,7 +652,11 @@ def _align_shape(
   """
   if val.shape == tgt_shape:
     return val
-  if val.ndim == 2 and len(tgt_shape) == 2 and val.T.shape == tgt_shape:
+  if (
+      val.ndim == 2
+      and len(tgt_shape) == 2
+      and tuple(reversed(val.shape)) == tuple(tgt_shape)
+  ):
     logging.info(
         'Transposing exact matrix shape mismatch on %s: %s -> %s',
         src_key,
@@ -949,6 +953,10 @@ def transfer_state_with_mappings(
       val,
       tgt_param,
   ) in unscanned_src_to_tgt_flat.items():
+    target_value = tgt_param.value
+    target_shape = target_value.shape
+    target_dtype = target_value.dtype
+
     # Apply transpose if configured
     val = _apply_transpose(val, flat_src_key, transpose_keys, rollout_engine)
 
@@ -956,13 +964,14 @@ def transfer_state_with_mappings(
     if key_mapping_hook_fns and flat_src_key in key_mapping_hook_fns:
       val = key_mapping_hook_fns[flat_src_key](val)
 
+    if kwargs.get('delete_dst_buffers', False):
+      _delete_target_buffers({flat_tgt_key: target_value}, {flat_tgt_key: val})
+
     # Align shapes (padding/repeating as needed)
-    val = _align_shape(
-        val, tgt_param.value.shape, flat_src_key, rollout_engine, **kwargs
-    )
+    val = _align_shape(val, target_shape, flat_src_key, rollout_engine, **kwargs)
 
     # Cast to target dtype
-    val = _apply_dtype_cast(val, tgt_param.value.dtype, flat_src_key)
+    val = _apply_dtype_cast(val, target_dtype, flat_src_key)
 
     # Assign transformed value
     tgt_param.value = val

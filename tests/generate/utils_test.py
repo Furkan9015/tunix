@@ -1261,6 +1261,44 @@ class UtilsTest(parameterized.TestCase):
         np.array([[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]], dtype=np.float32),
     )
 
+  def test_transfer_state_with_mappings_deletes_dst_before_shape_align(self):
+    src = MockState({
+        "model.weight": MockParam(
+            jnp.array([[1.0, 2.0], [3.0, 4.0]], dtype=jnp.float32)
+        )
+    })
+    dst = {"vllm_model.model.weight": jnp.zeros((2, 2), dtype=jnp.float32)}
+    mappings = {
+        "model.weight": ("vllm_model.model.weight", (None, None)),
+    }
+    events = []
+    original_delete_target_buffers = utils._delete_target_buffers
+    original_align_shape = utils._align_shape
+
+    def delete_target_buffers(spec_flat, src_flat):
+      events.append(("delete", next(iter(spec_flat.values())).shape))
+      original_delete_target_buffers(spec_flat, src_flat)
+
+    def align_shape(val, tgt_shape, src_key, rollout_engine=None, **kwargs):
+      events.append(("align", tgt_shape))
+      return original_align_shape(
+          val, tgt_shape, src_key, rollout_engine, **kwargs
+      )
+
+    with mock.patch.object(
+        utils, "_delete_target_buffers", side_effect=delete_target_buffers
+    ), mock.patch.object(utils, "_align_shape", side_effect=align_shape):
+      result = utils.transfer_state_with_mappings(
+          src, dst, mappings, delete_dst_buffers=True
+      )
+
+    self.assertIs(result, dst)
+    self.assertEqual([event[0] for event in events[:2]], ["delete", "align"])
+    np.testing.assert_array_equal(
+        np.asarray(dst["vllm_model.model.weight"]),
+        np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+    )
+
   def test_transfer_state_directly_scanned_layers(self):
     """Tests transfer from scanned 'layers' in source to 'layers_X' in dest."""
     # Source has 'layers' containing stacked weights (shape (2, ...))
