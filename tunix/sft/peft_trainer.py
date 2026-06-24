@@ -393,10 +393,9 @@ class PeftTrainer:
     if mesh.empty:
       return
     optimizer_state = nnx.state(self.optimizer, nnx.optimizer.OptState)
-    optimizer_pspecs = nnx.get_partition_spec(optimizer_state)
-
-    optimizer_sharded_state = jax.lax.with_sharding_constraint(
-        optimizer_state, optimizer_pspecs
+    optimizer_shardings = nnx.get_named_sharding(optimizer_state, mesh)
+    optimizer_sharded_state = jax.device_put(
+        optimizer_state, optimizer_shardings
     )
     nnx.update(self.optimizer, optimizer_sharded_state)
 

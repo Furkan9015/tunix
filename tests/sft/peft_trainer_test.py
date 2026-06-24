@@ -165,6 +165,26 @@ class PeftTrainerTest(parameterized.TestCase):
 
     trainer.train(self.train_ds)  # No eval dataset.
 
+  def test_shard_optimizer_replicates_single_device_scalars(self):
+    config = peft_trainer.TrainingConfig(eval_every_n_steps=2, max_steps=1)
+    rngs = nnx.Rngs(0)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=rngs)
+    optimizer = optax.adamw(1e-3)
+    trainer = peft_trainer.PeftTrainer(model, optimizer, config)
+
+    trainer._shard_optimizer(self.mesh)
+
+    optimizer_state = nnx.state(trainer.optimizer, nnx.optimizer.OptState)
+    scalar_leaves = [
+        x
+        for x in jax.tree.leaves(optimizer_state)
+        if isinstance(x, jax.Array) and x.ndim == 0
+    ]
+    self.assertNotEmpty(scalar_leaves)
+    for leaf in scalar_leaves:
+      self.assertEqual(leaf.sharding.mesh, self.mesh)
+      self.assertEqual(leaf.sharding.spec, shd.PartitionSpec())
+
   @parameterized.named_parameters(
       ('lora_disabled_distributed', False, True),
       ('lora_disabled_single_device', False, False),
@@ -461,8 +481,8 @@ class PeftTrainerTest(parameterized.TestCase):
 
     with mock.patch.object(
         peft_trainer.optax,
-        "MultiSteps",
-        side_effect=AssertionError("MultiSteps should not wrap a no-op step"),
+        'MultiSteps',
+        side_effect=AssertionError('MultiSteps should not wrap a no-op step'),
     ):
       peft_trainer.PeftTrainer(model, optimizer, config)
 
