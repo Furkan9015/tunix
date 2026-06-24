@@ -125,6 +125,8 @@ vllm_config:
     kv_cache_metrics: true
     disable_log_stats: false
     enable_prefix_caching: false
+    generation_config: "vllm"
+    language_model_only: true
     dtype: "bfloat16"
     limit_mm_per_prompt:
       image: 0

@@ -453,9 +453,9 @@ class MappingError(ValueError):
 
 
 class _MappingLeafParam:
-  """Param-like wrapper for mutable mapping leaves."""
+  """Mutable variable adapter for plain mapping-backed model states."""
 
-  def __init__(self, mapping: abc.MutableMapping[str, Any], key: str):
+  def __init__(self, mapping: Mapping[str, Any], key: Any):
     self._mapping = mapping
     self._key = key
 
@@ -476,44 +476,77 @@ class _MappingLeafParam:
     return self.value.dtype
 
   @property
+  def ndim(self):
+    return self.value.ndim
+
+  @property
   def sharding(self):
     return self.value.sharding
+
+  def __getitem__(self, item):
+    return self.value[item]
+
+  def __array__(self, dtype=None):
+    return np.asarray(self.value, dtype=dtype)
+
+  def __jax_array__(self):
+    return self.value
 
 
 class _MappingStateAdapter:
   """Minimal flat-state adapter for vLLM/tpu-inference dict states."""
 
-  def __init__(self, state: abc.MutableMapping[str, Any]):
+  def __init__(self, state: Mapping[str, Any]):
     self._state = state
 
   def flat_state(self):
-    return [
-        (
-            tuple(str(part) for part in key)
-            if isinstance(key, tuple)
-            else tuple(str(key).split('.')),
-            _MappingLeafParam(self._state, key),
+    flat = []
+
+    def visit(mapping, prefix=()):
+      for key, value in mapping.items():
+        if isinstance(value, abc.Mapping):
+          visit(value, prefix + (str(key),))
+          continue
+
+        path = (
+            prefix + (str(key),)
+            if prefix
+            else (
+                tuple(str(part) for part in key)
+                if isinstance(key, tuple)
+                else tuple(str(key).split('.'))
+            )
         )
-        for key in self._state
-    ]
+        flat.append((path, _MappingLeafParam(mapping, key)))
+
+    visit(self._state)
+    return flat
 
   def from_flat_path(self, flat_path):
-    for keys, param in flat_path:
-      key = '.'.join(str(k) for k in keys)
-      if key in self._state:
-        self._state[key] = param.value if hasattr(param, 'value') else param
+    del flat_path
     return self._state
 
 
 def _as_flat_state_adapter(state):
   if hasattr(state, 'flat_state'):
     return state
-  if isinstance(state, abc.MutableMapping):
+  if isinstance(state, abc.Mapping):
     return _MappingStateAdapter(state)
   raise TypeError(
       'Expected a state with flat_state() or a mutable mapping, got '
       f'{type(state)!r}.'
   )
+
+
+def _leaf_value(leaf: Any) -> Any:
+  return leaf.value if hasattr(leaf, 'value') else leaf
+
+
+def _delete_array_if_possible(arr: Any) -> bool:
+  if not hasattr(arr, 'delete') or getattr(arr, 'is_deleted', lambda: False)():
+    return False
+  arr.delete()
+  return True
 
 
 def _get_layer_axis_from_sharding_spec(sharding_spec) -> Optional[int]:
@@ -576,6 +609,29 @@ def _unroll_scanned_layers(
   return unscanned_flat
 
 
+def _transpose_key_for_src(
+    src_key: str,
+    transpose_keys: Optional[Dict[str, Tuple[int, ...]]],
+) -> str:
+  """Returns the configured transpose entry matching `src_key`, if any."""
+  if not transpose_keys:
+    return ''
+
+  last_key = src_key.split('.')[-1]
+  all_key = src_key
+  if last_key in transpose_keys and 'lora' not in last_key:
+    return last_key
+  if all_key in transpose_keys and 'lora' not in all_key:
+    return all_key
+  for key in transpose_keys:
+    if '*' not in key:
+      continue
+    pattern = '^' + re.escape(key).replace('\\*', '.*') + '$'
+    if re.match(pattern, all_key):
+      return key
+  return ''
+
+
 def _apply_transpose(
     val: jnp.ndarray,
     src_key: str,
@@ -583,28 +639,13 @@ def _apply_transpose(
     rollout_engine: Optional[str],
 ) -> jnp.ndarray:
   """Apply transpose operation if configured for this key."""
-  if not transpose_keys:
-    return val
-
-  last_key = src_key.split('.')[-1]
   all_key = src_key
-  target_key = ''
-  if last_key in transpose_keys and 'lora' not in last_key:
-    target_key = last_key
-  elif all_key in transpose_keys and 'lora' not in all_key:
-    target_key = all_key
-  else:
-    for k, _ in transpose_keys.items():
-      if '*' in k:
-        pattern = '^' + re.escape(k).replace('\\*', '.*') + '$'
-        if re.match(pattern, all_key):
-          target_key = k
-          break
+  target_key = _transpose_key_for_src(src_key, transpose_keys)
 
   # For LoRA
   # Note: The following codes takes effect in SGLangJAx rollout, and may not take effect in other rollout engine.
 
-  if rollout_engine == 'sglang_jax' and 'lora' in all_key:
+  if transpose_keys and rollout_engine == 'sglang_jax' and 'lora' in all_key:
     for r_key in transpose_keys:
       if re.compile(rf'{r_key}').match(all_key):
         logging.debug('Applying LoRA transpose on %s', src_key)
@@ -614,6 +655,34 @@ def _apply_transpose(
     logging.debug('Applying transpose on %s', src_key)
     return jnp.transpose(val, transpose_keys[target_key])
 
+  return val
+
+
+def _repair_configured_reverse_transpose(
+    val: jnp.ndarray,
+    tgt_shape: Tuple[int, ...],
+    src_key: str,
+    transpose_keys: Optional[Dict[str, Tuple[int, ...]]],
+) -> jnp.ndarray:
+  """Repairs exact reverse-shape misses for configured 2-D transposes."""
+  target_key = _transpose_key_for_src(src_key, transpose_keys)
+  if not target_key:
+    return val
+  axes = transpose_keys[target_key]
+  if (
+      len(axes) == 2
+      and tuple(axes) == (1, 0)
+      and len(val.shape) == 2
+      and len(tgt_shape) == 2
+      and tuple(val.shape) == tuple(reversed(tgt_shape))
+  ):
+    logging.warning(
+        'Repairing configured transpose for %s at transfer boundary: %s -> %s.',
+        src_key,
+        val.shape,
+        tgt_shape,
+    )
+    return jnp.transpose(val, axes)
   return val
 
 
@@ -923,6 +992,7 @@ def transfer_state_with_mappings(
   Returns:
     The target state with the transferred values.
   """
+  src_state = _as_flat_state_adapter(src_state)
   dst_state_adapter = _as_flat_state_adapter(dst_state)
 
   # Get flat target state
@@ -947,6 +1017,7 @@ def transfer_state_with_mappings(
   # Unroll scanned layers and flatten source state
   unscanned_src_to_tgt_flat = _unroll_scanned_layers(src_state, src_to_tgt_map)
   transferred_target_keys = set()
+  transferred_target_param_ids = set()
 
   # Transfer values with transformations
   for (flat_src_key, flat_tgt_key), (
@@ -956,16 +1027,22 @@ def transfer_state_with_mappings(
     target_value = tgt_param.value
     target_shape = target_value.shape
     target_dtype = target_value.dtype
+    if kwargs.get('delete_dst_buffers', False) and _delete_array_if_possible(
+        target_value
+    ):
+      jax.effects_barrier()
+
+    val = _leaf_value(val)
 
     # Apply transpose if configured
     val = _apply_transpose(val, flat_src_key, transpose_keys, rollout_engine)
+    val = _repair_configured_reverse_transpose(
+        val, target_shape, flat_src_key, transpose_keys
+    )
 
     # Apply optional hook function
     if key_mapping_hook_fns and flat_src_key in key_mapping_hook_fns:
       val = key_mapping_hook_fns[flat_src_key](val)
-
-    if kwargs.get('delete_dst_buffers', False):
-      _delete_target_buffers({flat_tgt_key: target_value}, {flat_tgt_key: val})
 
     # Align shapes (padding/repeating as needed)
     val = _align_shape(val, target_shape, flat_src_key, rollout_engine, **kwargs)
@@ -976,6 +1053,7 @@ def transfer_state_with_mappings(
     # Assign transformed value
     tgt_param.value = val
     transferred_target_keys.add(flat_tgt_key)
+    transferred_target_param_ids.add(id(tgt_param))
 
   # Target rollout engine might have different implementation and have materialized lm_head
   _sync_tied_lm_head_if_needed(tgt_flat_list, transferred_target_keys)
@@ -989,24 +1067,25 @@ def transfer_state_with_mappings(
     tgt_flat_dict = {
         key: tgt_params.value if hasattr(tgt_params, 'value') else tgt_params
         for key, tgt_params in tgt_flat_list
+        if id(tgt_params) in transferred_target_param_ids
     }
+    reshard_spec_dict = {key: sharding_dict[key] for key in tgt_flat_dict}
     if kwargs.get('reshard_chunk_size', None) is not None:
       resharded_values_flat_dict = _reshard_in_chunks(
           src_flat=tgt_flat_dict,
-          spec_flat=sharding_dict,
+          spec_flat=reshard_spec_dict,
           reshard_fn=reshard_fn,
           chunk_size=kwargs['reshard_chunk_size'],
           delete_spec_buffers=kwargs.get('delete_dst_buffers', False),
       )
     else:
       if kwargs.get('delete_dst_buffers', False):
-        _delete_target_buffers(sharding_dict, tgt_flat_dict)
-      resharded_values_flat_dict = reshard_fn(tgt_flat_dict, sharding_dict)
+        _delete_target_buffers(reshard_spec_dict, tgt_flat_dict)
+      resharded_values_flat_dict = reshard_fn(tgt_flat_dict, reshard_spec_dict)
 
     for tgt_key, tgt_param in tgt_flat_list:
-      assert (
-          tgt_key in resharded_values_flat_dict
-      ), f'Key {tgt_key} not in resharded values'
+      if tgt_key not in resharded_values_flat_dict:
+        continue
       if hasattr(tgt_param, 'value'):
         tgt_param.value = resharded_values_flat_dict[tgt_key]
       else:
