@@ -27,6 +27,11 @@ MappingEntry = Tuple[str, Sharding]
 
 
 _VLLM_PREFIX = 'vllm_model.language_model.'
+_LINEAR_NUM_VALUE_HEADS = 48
+_LINEAR_NUM_KEY_HEADS = 16
+_LINEAR_KEY_HEAD_DIM = 128
+_LINEAR_VALUE_HEAD_DIM = 128
+_LINEAR_VALUE_HEADS_PER_KEY = _LINEAR_NUM_VALUE_HEADS // _LINEAR_NUM_KEY_HEADS
 
 
 class _FlatState:
@@ -54,6 +59,106 @@ class _LazyConcatParam:
     return jnp.concatenate(
         [param.value if hasattr(param, 'value') else param for param in self._params],
         axis=self._axis,
+    )
+
+
+def _param_value(param):
+  return param.value if hasattr(param, 'value') else param
+
+
+def _qwen3_next_interleave_qkvz(
+    qkv: jnp.ndarray,
+    z: jnp.ndarray,
+) -> jnp.ndarray:
+  """Build vLLM Qwen3-Next [q_g,k_g,v_g,z_g] GQA projection layout."""
+  key_dim = _LINEAR_NUM_KEY_HEADS * _LINEAR_KEY_HEAD_DIM
+  value_dim = _LINEAR_NUM_VALUE_HEADS * _LINEAR_VALUE_HEAD_DIM
+  expected_qkv_dim = 2 * key_dim + value_dim
+
+  if qkv.shape[-1] != expected_qkv_dim or z.shape[-1] != value_dim:
+    raise ValueError(
+        'Unexpected Qwen3.6 linear-attention qkv/z projection shapes: '
+        f'{qkv.shape=} {z.shape=} {expected_qkv_dim=} {value_dim=}'
+    )
+  if qkv.shape[:-1] != z.shape[:-1]:
+    raise ValueError(
+        'Qwen3.6 linear-attention qkv/z prefixes must match: '
+        f'{qkv.shape=} {z.shape=}'
+    )
+
+  q, k, v = jnp.split(qkv, (key_dim, 2 * key_dim), axis=-1)
+  q = q.reshape(q.shape[:-1] + (_LINEAR_NUM_KEY_HEADS, _LINEAR_KEY_HEAD_DIM))
+  k = k.reshape(k.shape[:-1] + (_LINEAR_NUM_KEY_HEADS, _LINEAR_KEY_HEAD_DIM))
+  v = v.reshape(
+      v.shape[:-1]
+      + (
+          _LINEAR_NUM_KEY_HEADS,
+          _LINEAR_VALUE_HEADS_PER_KEY * _LINEAR_VALUE_HEAD_DIM,
+      )
+  )
+  z = z.reshape(
+      z.shape[:-1]
+      + (
+          _LINEAR_NUM_KEY_HEADS,
+          _LINEAR_VALUE_HEADS_PER_KEY * _LINEAR_VALUE_HEAD_DIM,
+      )
+  )
+  interleaved = jnp.concatenate((q, k, v, z), axis=-1)
+  return interleaved.reshape(qkv.shape[:-1] + (expected_qkv_dim + value_dim,))
+
+
+def _qwen3_next_interleave_ba(
+    b: jnp.ndarray,
+    a: jnp.ndarray,
+) -> jnp.ndarray:
+  """Build vLLM Qwen3-Next [b_g,a_g] GQA projection layout."""
+  if b.shape[-1] != _LINEAR_NUM_VALUE_HEADS or a.shape[-1] != _LINEAR_NUM_VALUE_HEADS:
+    raise ValueError(
+        'Unexpected Qwen3.6 linear-attention b/a projection shapes: '
+        f'{b.shape=} {a.shape=} expected_last_dim={_LINEAR_NUM_VALUE_HEADS}'
+    )
+  if b.shape[:-1] != a.shape[:-1]:
+    raise ValueError(
+        'Qwen3.6 linear-attention b/a prefixes must match: '
+        f'{b.shape=} {a.shape=}'
+    )
+
+  b = b.reshape(
+      b.shape[:-1] + (_LINEAR_NUM_KEY_HEADS, _LINEAR_VALUE_HEADS_PER_KEY)
+  )
+  a = a.reshape(
+      a.shape[:-1] + (_LINEAR_NUM_KEY_HEADS, _LINEAR_VALUE_HEADS_PER_KEY)
+  )
+  return jnp.concatenate((b, a), axis=-1).reshape(
+      b.shape[:-2] + (_LINEAR_NUM_VALUE_HEADS * 2,)
+  )
+
+
+class _LazyQwen3NextQkvzParam:
+  """Param-like wrapper that fuses Qwen3.6 GDN qkv/z into Qwen3-Next layout."""
+
+  def __init__(self, qkv_param, z_param):
+    self._qkv_param = qkv_param
+    self._z_param = z_param
+
+  @property
+  def value(self):
+    return _qwen3_next_interleave_qkvz(
+        _param_value(self._qkv_param), _param_value(self._z_param)
+    )
+
+
+class _LazyQwen3NextBaParam:
+  """Param-like wrapper that fuses Qwen3.6 GDN b/a into Qwen3-Next layout."""
+
+  def __init__(self, b_param, a_param):
+    self._b_param = b_param
+    self._a_param = a_param
+
+  @property
+  def value(self):
+    return _qwen3_next_interleave_ba(
+        _param_value(self._b_param), _param_value(self._a_param)
     )
 
 
@@ -142,10 +247,6 @@ TO_HF_HOOK_FNS = {
     'layers.*.mlp.gate_up_proj.kernel': _packed_output_hook((17408, 17408)),
     # Full attention q_proj carries [q, output_gate] for Qwen3.5/3.6.
     'layers.*.attn.qkv_proj.kernel': _packed_output_hook((12288, 1024, 1024)),
-    'layers.*.linear_attn.in_proj_qkvz.kernel': _packed_output_hook(
-        (10240, 6144)
-    ),
-    'layers.*.linear_attn.in_proj_ba.kernel': _packed_output_hook((48, 48)),
 }
 
 
@@ -278,7 +379,7 @@ def _lora_mappings() -> Dict[str, MappingEntry]:
 
 
 def preprocess_src_state(src_state: Any) -> Any:
-  """Fuse Qwen3.6 GDN projections to match vLLM's Qwen3.5 module names."""
+  """Fuse Qwen3.6 projections to match vLLM's Qwen3-Next module layout."""
   if not hasattr(src_state, 'flat_state'):
     return src_state
 
@@ -323,7 +424,9 @@ def preprocess_src_state(src_state: Any) -> Any:
       qkv_keys, qkv_param = bucket['in_proj_qkv']
       z_param = bucket['in_proj_z'][1]
       fused_keys = qkv_keys[:-2] + ('in_proj_qkvz', 'kernel')
-      new_flat_state.append((fused_keys, _LazyConcatParam((qkv_param, z_param), -1)))
+      new_flat_state.append(
+          (fused_keys, _LazyQwen3NextQkvzParam(qkv_param, z_param))
+      )
     else:
       for proj_name in ('in_proj_qkv', 'in_proj_z'):
         if proj_name in bucket:
@@ -333,7 +436,7 @@ def preprocess_src_state(src_state: Any) -> Any:
       b_keys, b_param = bucket['in_proj_b']
       a_param = bucket['in_proj_a'][1]
       fused_keys = b_keys[:-2] + ('in_proj_ba', 'kernel')
-      new_flat_state.append((fused_keys, _LazyConcatParam((b_param, a_param), -1)))
+      new_flat_state.append((fused_keys, _LazyQwen3NextBaParam(b_param, a_param)))
     else:
       for proj_name in ('in_proj_b', 'in_proj_a'):
         if proj_name in bucket:
