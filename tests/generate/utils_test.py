@@ -1225,6 +1225,22 @@ class UtilsTest(parameterized.TestCase):
         src.params["model.embed_tokens.weight"].value,
     )
 
+  def test_transfer_state_with_mappings_accepts_mutable_dict_dst(self):
+    src = MockState({
+        "model.weight": MockParam(jnp.array([1.0, 2.0], dtype=jnp.float32))
+    })
+    dst = {"vllm_model.model.weight": jnp.zeros((2,), dtype=jnp.float32)}
+    mappings = {
+        "model.weight": ("vllm_model.model.weight", (None,)),
+    }
+
+    result = utils.transfer_state_with_mappings(src, dst, mappings)
+
+    self.assertIs(result, dst)
+    np.testing.assert_array_equal(
+        np.asarray(dst["vllm_model.model.weight"]), np.array([1.0, 2.0])
+    )
+
   def test_transfer_state_directly_scanned_layers(self):
     """Tests transfer from scanned 'layers' in source to 'layers_X' in dest."""
     # Source has 'layers' containing stacked weights (shape (2, ...))

@@ -452,6 +452,70 @@ class MappingError(ValueError):
   pass
 
 
+class _MappingLeafParam:
+  """Param-like wrapper for mutable mapping leaves."""
+
+  def __init__(self, mapping: abc.MutableMapping[str, Any], key: str):
+    self._mapping = mapping
+    self._key = key
+
+  @property
+  def value(self):
+    return self._mapping[self._key]
+
+  @value.setter
+  def value(self, value):
+    self._mapping[self._key] = value
+
+  @property
+  def shape(self):
+    return self.value.shape
+
+  @property
+  def dtype(self):
+    return self.value.dtype
+
+  @property
+  def sharding(self):
+    return self.value.sharding
+
+
+class _MappingStateAdapter:
+  """Minimal flat-state adapter for vLLM/tpu-inference dict states."""
+
+  def __init__(self, state: abc.MutableMapping[str, Any]):
+    self._state = state
+
+  def flat_state(self):
+    return [
+        (
+            tuple(str(part) for part in key)
+            if isinstance(key, tuple)
+            else tuple(str(key).split('.')),
+            _MappingLeafParam(self._state, key),
+        )
+        for key in self._state
+    ]
+
+  def from_flat_path(self, flat_path):
+    for keys, param in flat_path:
+      key = '.'.join(str(k) for k in keys)
+      if key in self._state:
+        self._state[key] = param.value if hasattr(param, 'value') else param
+    return self._state
+
+
+def _as_flat_state_adapter(state):
+  if hasattr(state, 'flat_state'):
+    return state
+  if isinstance(state, abc.MutableMapping):
+    return _MappingStateAdapter(state)
+  raise TypeError(
+      'Expected a state with flat_state() or a mutable mapping, got '
+      f'{type(state)!r}.'
+  )
+
+
 def _get_layer_axis_from_sharding_spec(sharding_spec) -> Optional[int]:
   """Returns index of the 'layer' axis in sharding_spec, or None if not found."""
   if isinstance(sharding_spec, (list, tuple)):
@@ -847,8 +911,10 @@ def transfer_state_with_mappings(
   Returns:
     The target state with the transferred values.
   """
+  dst_state_adapter = _as_flat_state_adapter(dst_state)
+
   # Get flat target state
-  tgt_flat_list = dst_state.flat_state()
+  tgt_flat_list = dst_state_adapter.flat_state()
 
   # Build sharding dictionary if resharding is needed
   sharding_dict = None
@@ -929,7 +995,7 @@ def transfer_state_with_mappings(
       else:
         tgt_param = resharded_values_flat_dict[tgt_key]
 
-  return dst_state.from_flat_path(tgt_flat_list)
+  return dst_state_adapter.from_flat_path(tgt_flat_list)
 
 
 def _shapes_are_repeatable(
