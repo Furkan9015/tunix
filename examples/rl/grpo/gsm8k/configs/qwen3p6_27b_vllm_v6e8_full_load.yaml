@@ -57,7 +57,7 @@ dataset_name: "openai/gsm8k:main"
 train_split: "train"
 apply_chat_template_to_dataset: true
 batch_size: 1
-num_batches: 1
+num_batches: 8
 num_train_epochs: 1
 train_fraction: 1.0
 num_test_batches: 0
@@ -65,7 +65,7 @@ tfds_download: false
 
 rl_training_config:
   eval_every_n_steps: 100
-  max_steps: 1
+  max_steps: 8
   mini_batch_size: 1
   train_micro_batch_size: 1
   rollout_micro_batch_size: 1
@@ -74,11 +74,11 @@ rl_training_config:
   checkpoint_root_directory: "/tmp/grpo_checkpoints/qwen3p6_27b_vllm_v6e8_full_load"
   checkpointing_options:
     max_to_keep: 1
-    save_interval_steps: 100
+    save_interval_steps: 4
   metrics_logging_options:
     project_name: "tunix"
-    run_name: "qwen3p6_27b_vllm_v6e8_full_load"
-    log_dir: "/tmp/tensorboard/qwen3p6_27b_vllm_v6e8_full_load"
+    run_name: "qwen3p6_27b_vllm_v6e8_rlvr"
+    log_dir: "/tmp/tensorboard/qwen3p6_27b_vllm_v6e8_rlvr"
     flush_every_n_steps: 1
   profiler_options: {}
   perf_metrics_options: {}
@@ -87,7 +87,12 @@ rl_training_config:
   actor_optimizer_config:
     opt_type: "adamw"
     learning_rate: 1.0e-7
-    schedule_type: null
+    schedule_type: "warmup_cosine_decay_schedule"
+    init_value: 0.0
+    peak_value: 1.0e-7
+    end_value: 0.0
+    warmup_steps: 1
+    decay_steps: 8
     b1: 0.9
     b2: 0.99
     weight_decay: 0.01
@@ -95,8 +100,8 @@ rl_training_config:
   critic_optimizer_config: null
 
 rollout_config:
-  total_generation_steps: 64
-  max_prompt_length: 256
+  total_generation_steps: 256
+  max_prompt_length: 512
   temperature: 0.9
   top_p: null
   top_k: null
@@ -109,8 +114,8 @@ vllm_config:
   tpu_backend_type: "jax"
   server_mode: true
   async_scheduling: false
-  max_num_seqs: 2
-  max_num_batched_tokens: 1024
+  max_num_seqs: 4
+  max_num_batched_tokens: 3072
   kwargs:
     kv_cache_metrics: true
     disable_log_stats: false
@@ -125,7 +130,7 @@ sglang_jax_config: {}
 offload_to_cpu: false
 
 grpo_config:
-  num_generations: 2
+  num_generations: 4
   num_iterations: 1
   beta: 0.04
   epsilon: 0.2
