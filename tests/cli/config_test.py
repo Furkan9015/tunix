@@ -248,6 +248,27 @@ class ConfigTest(parameterized.TestCase):
         },
     )
 
+  def test_create_optimizer_adafactor_static_factored_args(self):
+    with mock.patch.dict(os.environ, {"HF_TOKEN": "dummy"}):
+      hp = self.initialize_config([
+          "optimizer_config.opt_type=adafactor",
+          "optimizer_config.learning_rate=0.001",
+          "optimizer_config.factored=true",
+          "optimizer_config.min_dim_size_to_factor=128",
+      ])
+    optimizer = hp.create_optimizer("optimizer_config")
+    params = {"w": jax.numpy.ones((256, 256), dtype=jax.numpy.float32)}
+    updates = jax.tree.map(jax.numpy.ones_like, params)
+    opt_state = optimizer.init(params)
+
+    @jax.jit
+    def update(updates, opt_state, params):
+      return optimizer.update(updates, opt_state, params)
+
+    new_updates, new_opt_state = update(updates, opt_state, params)
+    self.assertEqual(new_updates["w"].shape, params["w"].shape)
+    self.assertIsNotNone(new_opt_state)
+
   @parameterized.named_parameters(
       dict(
           testcase_name="unknown_name",

@@ -684,7 +684,14 @@ class HyperParameters:
     # the learning rate can be tracked and logged during training.
     static_args = tuple(
         name
-        for name in ("mu_dtype", "dtype_momentum", "mask", "weight_decay_mask")
+        for name in (
+            "mu_dtype",
+            "dtype_momentum",
+            "mask",
+            "weight_decay_mask",
+            "factored",
+            "min_dim_size_to_factor",
+        )
         if name in opt_kwargs
     )
     injected_opt_func = optax.inject_hyperparams(
