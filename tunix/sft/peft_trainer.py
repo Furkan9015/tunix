@@ -394,6 +394,15 @@ class PeftTrainer:
       return
     optimizer_state = nnx.state(self.optimizer, nnx.optimizer.OptState)
     optimizer_shardings = nnx.get_named_sharding(optimizer_state, mesh)
+    optimizer_shardings = jax.tree.map(
+        lambda state, sharding: (
+            sharding_utils.get_sharding(state, sharding.mesh, sharding.spec)
+            if isinstance(sharding, shd.NamedSharding)
+            else sharding
+        ),
+        optimizer_state,
+        optimizer_shardings,
+    )
     optimizer_sharded_state = jax.device_put(
         optimizer_state, optimizer_shardings
     )

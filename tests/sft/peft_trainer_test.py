@@ -185,6 +185,26 @@ class PeftTrainerTest(parameterized.TestCase):
       self.assertEqual(leaf.sharding.mesh, self.mesh)
       self.assertEqual(leaf.sharding.spec, shd.PartitionSpec())
 
+  def test_shard_optimizer_replicates_incompatible_factored_slots(self):
+    config = peft_trainer.TrainingConfig(eval_every_n_steps=2, max_steps=1)
+    rngs = nnx.Rngs(0)
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=rngs)
+    optimizer = optax.adafactor(1e-3, min_dim_size_to_factor=1)
+    trainer = peft_trainer.PeftTrainer(model, optimizer, config)
+
+    trainer._shard_optimizer(self.mesh)
+
+    optimizer_state = nnx.state(trainer.optimizer, nnx.optimizer.OptState)
+    rank_one_leaves = [
+        x
+        for x in jax.tree.leaves(optimizer_state)
+        if isinstance(x, jax.Array) and x.ndim == 1
+    ]
+    self.assertNotEmpty(rank_one_leaves)
+    for leaf in rank_one_leaves:
+      self.assertEqual(leaf.sharding.mesh, self.mesh)
+      self.assertLessEqual(len(leaf.sharding.spec), leaf.ndim)
+
   @parameterized.named_parameters(
       ('lora_disabled_distributed', False, True),
       ('lora_disabled_single_device', False, False),
