@@ -130,6 +130,20 @@ class Qwen3P6ModelTest(absltest.TestCase):
         mapping_vllm_jax.TO_HF_HOOK_FNS,
     )
 
+  def test_gdn_qwen35_fusions_use_column_parallel_sharding(self):
+    self.assertEqual(
+        mapping_vllm_jax.TO_HF_MAPPINGS[
+            'layers.*.linear_attn.in_proj_qkvz.kernel'
+        ][1],
+        (None, 'model'),
+    )
+    self.assertEqual(
+        mapping_vllm_jax.TO_HF_MAPPINGS[
+            'layers.*.linear_attn.in_proj_ba.kernel'
+        ][1],
+        (None, 'model'),
+    )
+
 
 if __name__ == "__main__":
   absltest.main()

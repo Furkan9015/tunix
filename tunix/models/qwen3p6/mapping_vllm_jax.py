@@ -200,11 +200,11 @@ TO_HF_MAPPINGS: Dict[str, MappingEntry] = {
     ),
     'layers.*.linear_attn.in_proj_qkvz.kernel': (
         f'{_VLLM_PREFIX}model.layers.*.linear_attn.in_proj_qkvz.weight',
-        (None, None),
+        (None, 'model'),
     ),
     'layers.*.linear_attn.in_proj_ba.kernel': (
         f'{_VLLM_PREFIX}model.layers.*.linear_attn.in_proj_ba.weight',
-        (None, None),
+        (None, 'model'),
     ),
     'layers.*.linear_attn.out_proj.kernel': (
         f'{_VLLM_PREFIX}model.layers.*.linear_attn.out_proj.weight',
