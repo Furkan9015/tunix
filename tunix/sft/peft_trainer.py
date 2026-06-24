@@ -209,7 +209,10 @@ class PeftTrainer:
     self.model = model
     self.config = training_config
     self._lora_enabled = utils.is_lora_enabled(self.model)
-    if training_config.gradient_accumulation_steps is not None:
+    if (
+        training_config.gradient_accumulation_steps is not None
+        and training_config.gradient_accumulation_steps > 1
+    ):
       optimizer = optax.MultiSteps(
           optimizer, training_config.gradient_accumulation_steps
       )

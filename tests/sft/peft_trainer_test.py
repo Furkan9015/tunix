@@ -450,6 +450,22 @@ class PeftTrainerTest(parameterized.TestCase):
         TEST_LEARNING_RATE,
     )
 
+  def test_gradient_accumulation_one_skips_multisteps_wrapper(self):
+    config = peft_trainer.TrainingConfig(
+        eval_every_n_steps=2,
+        max_steps=1,
+        gradient_accumulation_steps=1,
+    )
+    model = tc.ToyTransformer(config=tc.ModelConfig(), rngs=nnx.Rngs(0))
+    optimizer = optax.sgd(1e-3)
+
+    with mock.patch.object(
+        peft_trainer.optax,
+        "MultiSteps",
+        side_effect=AssertionError("MultiSteps should not wrap a no-op step"),
+    ):
+      peft_trainer.PeftTrainer(model, optimizer, config)
+
   @parameterized.named_parameters(
       ('scalar', TEST_LEARNING_RATE),
       ('constant_schedule', optax.constant_schedule(TEST_LEARNING_RATE)),
