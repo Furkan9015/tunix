@@ -652,6 +652,14 @@ def _align_shape(
   """
   if val.shape == tgt_shape:
     return val
+  if val.ndim == 2 and len(tgt_shape) == 2 and val.T.shape == tgt_shape:
+    logging.info(
+        'Transposing exact matrix shape mismatch on %s: %s -> %s',
+        src_key,
+        val.shape,
+        tgt_shape,
+    )
+    return jnp.transpose(val)
 
   additional_reshape = False
   new_tgt_shape = tgt_shape

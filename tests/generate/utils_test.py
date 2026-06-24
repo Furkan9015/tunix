@@ -1241,6 +1241,26 @@ class UtilsTest(parameterized.TestCase):
         np.asarray(dst["vllm_model.model.weight"]), np.array([1.0, 2.0])
     )
 
+  def test_transfer_state_with_mappings_transposes_reversed_matrix_shape(self):
+    src = MockState({
+        "model.proj.kernel": MockParam(
+            jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=jnp.float32)
+        )
+    })
+    dst = MockState({
+        "model.proj.weight": MockParam(jnp.zeros((3, 2), dtype=jnp.float32))
+    })
+    mappings = {
+        "model.proj.kernel": ("model.proj.weight", (None, None)),
+    }
+
+    result = utils.transfer_state_with_mappings(src, dst, mappings)
+
+    np.testing.assert_array_equal(
+        result.params["model.proj.weight"],
+        np.array([[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]], dtype=np.float32),
+    )
+
   def test_transfer_state_directly_scanned_layers(self):
     """Tests transfer from scanned 'layers' in source to 'layers_X' in dest."""
     # Source has 'layers' containing stacked weights (shape (2, ...))
