@@ -23,6 +23,7 @@ export HF_TOKEN="${HF_TOKEN:-}"
 
 MODEL_ID="${MODEL_ID:-Qwen/Qwen3.6-27B}"
 MODEL_DIR="${MODEL_DIR:-/dev/shm/models/qwen3p6-27b}"
+CONFIG_PATH="${CONFIG_PATH:-examples/rl/grpo/gsm8k/configs/qwen3p6_27b_vllm_v6e8_full_load.yaml}"
 
 cd "$(dirname "$0")/../../../.."
 
@@ -50,7 +51,7 @@ else:
 PY
 
 python -m tunix.cli.grpo_main \
-  examples/rl/grpo/gsm8k/configs/qwen3p6_27b_vllm_v6e8_full_load.yaml \
+  "${CONFIG_PATH}" \
   model_config.model_download_path="${MODEL_DIR}" \
   actor_model_config.model_download_path="${MODEL_DIR}" \
   reference_model_config.model_download_path="${MODEL_DIR}" \

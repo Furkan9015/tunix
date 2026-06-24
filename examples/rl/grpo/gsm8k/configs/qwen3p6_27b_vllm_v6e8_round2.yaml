@@ -1,0 +1,145 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+model_config: &qwen3p6_27b_model
+  model_name: "qwen3.6-27b"
+  model_source: "huggingface"
+  model_id: "Qwen/Qwen3.6-27B"
+  model_path: ""
+  model_download_path: "/dev/shm/models/qwen3p6-27b"
+  intermediate_ckpt_dir: "/tmp/intermediate_ckpt/qwen3p6-27b"
+  rng_seed: 42
+  model_display: false
+  use_flash_attention: false
+  flash_attention_block_size: 256
+  remat_config: 3
+  dtype: "bfloat16"
+  param_dtype: "bfloat16"
+  logits_chunk_size: 16
+  lora_config: {}
+  mesh:
+    shape: "(2,4)"
+    axis_names: "('fsdp','tp')"
+    allocation_policy: "COMPACT"
+
+actor_model_config:
+  <<: *qwen3p6_27b_model
+
+reference_model_config:
+  <<: *qwen3p6_27b_model
+  mesh: null
+  same_mesh_as: "actor"
+
+rollout_model_config:
+  <<: *qwen3p6_27b_model
+  mesh: null
+  same_mesh_as: "actor"
+
+tokenizer_config:
+  tokenizer_path: "/dev/shm/models/qwen3p6-27b"
+  tokenizer_type: "huggingface"
+  add_bos: false
+  add_eos: false
+
+data_source: "huggingface"
+dataset_name: "openai/gsm8k:main"
+train_split: "train"
+apply_chat_template_to_dataset: true
+batch_size: 1
+num_batches: 10
+num_train_epochs: 1
+train_fraction: 1.0
+num_test_batches: 0
+tfds_download: false
+
+rl_training_config:
+  eval_every_n_steps: 100
+  max_steps: 10
+  mini_batch_size: 1
+  train_micro_batch_size: 1
+  rollout_micro_batch_size: 1
+  compute_logps_micro_batch_size: 1
+  compute_logps_chunk_size: 16
+  checkpoint_root_directory: "/tmp/grpo_checkpoints/qwen3p6_27b_vllm_v6e8_round2"
+  checkpointing_options:
+    max_to_keep: 2
+    save_interval_steps: 1
+  metrics_logging_options:
+    project_name: "tunix"
+    run_name: "qwen3p6_27b_vllm_v6e8_round2"
+    log_dir: "/tmp/tensorboard/qwen3p6_27b_vllm_v6e8_round2"
+    flush_every_n_steps: 1
+  profiler_options: {}
+  perf_metrics_options: {}
+  data_sharding_axis: ["fsdp"]
+  max_inflight_computations: 1
+  actor_optimizer_config:
+    opt_type: "adafactor"
+    learning_rate: 1.0e-7
+    schedule_type: "warmup_cosine_decay_schedule"
+    init_value: 0.0
+    peak_value: 1.0e-7
+    end_value: 0.0
+    warmup_steps: 1
+    decay_steps: 10
+    min_dim_size_to_factor: 128
+    decay_rate: 0.8
+    multiply_by_parameter_scale: false
+    clipping_threshold: 1.0
+    momentum: null
+    dtype_momentum: "bfloat16"
+    factored: true
+    weight_decay_rate: 0.01
+  critic_optimizer_config: null
+
+rollout_config:
+  total_generation_steps: 256
+  max_prompt_length: 512
+  temperature: 0.6
+  top_p: null
+  top_k: null
+  return_logprobs: true
+
+rollout_engine: "vllm"
+vllm_config:
+  model_version: "/dev/shm/models/qwen3p6-27b"
+  hbm_utilization: 0.825
+  tpu_backend_type: "jax"
+  server_mode: true
+  async_scheduling: false
+  offload_weights_to_cpu: true
+  max_num_seqs: 4
+  max_num_batched_tokens: 2048
+  kwargs:
+    kv_cache_metrics: true
+    disable_log_stats: false
+    enable_prefix_caching: false
+    dtype: "bfloat16"
+    limit_mm_per_prompt:
+      image: 0
+      video: 0
+      audio: 0
+sglang_jax_config: {}
+
+offload_to_cpu: false
+
+grpo_config:
+  num_generations: 4
+  num_iterations: 1
+  beta: 0.04
+  epsilon: 0.2
+
+verl_compatible: false
+reward_functions:
+  - "tunix/cli/reward_fn/gsm8k.py"
