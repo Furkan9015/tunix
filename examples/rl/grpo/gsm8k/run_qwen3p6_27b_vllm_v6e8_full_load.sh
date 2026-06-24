@@ -23,8 +23,6 @@ export HF_TOKEN="${HF_TOKEN:-}"
 
 MODEL_ID="${MODEL_ID:-Qwen/Qwen3.6-27B}"
 MODEL_DIR="${MODEL_DIR:-/dev/shm/models/qwen3p6-27b}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-/tmp/grpo_checkpoints/qwen3p6_27b_vllm_v6e8_full_load}"
-LOG_DIR="${LOG_DIR:-/tmp/tensorboard/qwen3p6_27b_vllm_v6e8_full_load}"
 
 cd "$(dirname "$0")/../../../.."
 
@@ -59,6 +57,4 @@ python -m tunix.cli.grpo_main \
   rollout_model_config.model_download_path="${MODEL_DIR}" \
   tokenizer_config.tokenizer_path="${MODEL_DIR}" \
   vllm_config.model_version="${MODEL_DIR}" \
-  rl_training_config.checkpoint_root_directory="${CHECKPOINT_DIR}" \
-  rl_training_config.metrics_logging_options.log_dir="${LOG_DIR}" \
   "$@"
