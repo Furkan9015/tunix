@@ -19,6 +19,7 @@ from absl.testing import absltest
 from absl.testing import parameterized
 from flax import nnx
 import jax
+import jax.numpy as jnp
 import qwix
 from tunix.cli.utils import model
 from tunix.generate import tokenizer_adapter
@@ -268,6 +269,43 @@ class ModelTest(parameterized.TestCase):
       mock_nnx_display.assert_called_once_with(returned_model)
     else:
       mock_nnx_display.assert_not_called()
+
+  @mock.patch.object(automodel, 'AutoModel', autospec=True)
+  def test_create_model_forwards_native_model_config_overrides(
+      self, mock_automodel
+  ):
+    mesh = mock.create_autospec(jax.sharding.Mesh, instance=True, spec_set=True)
+    mock_model = mock.create_autospec(nnx.Module, instance=True)
+    mock_model.config = mock.create_autospec(
+        test_common.ModelConfig, instance=True
+    )
+    mock_automodel.from_pretrained.return_value = (
+        mock_model,
+        'mock_model_path',
+    )
+
+    model.create_model(
+        {
+            'model_name': 'qwen3.6-27b',
+            'model_source': 'huggingface',
+            'model_id': 'Qwen/Qwen3.6-27B',
+            'model_display': False,
+            'dtype': 'bfloat16',
+            'param_dtype': 'bf16',
+            'logits_chunk_size': 16,
+            'enable_sequence_parallel': True,
+            'remat_policy': 'offload_decoder_input',
+        },
+        {'tokenizer_path': 'Qwen/Qwen3.6-27B'},
+        mesh,
+    )
+
+    _, kwargs = mock_automodel.from_pretrained.call_args
+    self.assertEqual(kwargs['dtype'], jnp.bfloat16)
+    self.assertEqual(kwargs['param_dtype'], jnp.bfloat16)
+    self.assertEqual(kwargs['logits_chunk_size'], 16)
+    self.assertTrue(kwargs['enable_sequence_parallel'])
+    self.assertEqual(kwargs['remat_policy'], 'offload_decoder_input')
 
 
 if __name__ == '__main__':

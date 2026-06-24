@@ -19,6 +19,7 @@ from typing import Any, Tuple
 from absl import logging
 from flax import nnx
 import jax
+import jax.numpy as jnp
 import qwix
 from tunix.generate import tokenizer_adapter as tokenizer_lib
 from tunix.models import automodel
@@ -26,6 +27,42 @@ from tunix.models import naming
 from tunix.rl import reshard
 
 _DEFAULT_TOKENIZER_PATH = 'meta-llama/Llama-3.1-8B'
+_DTYPE_ALIASES = {
+    'bf16': jnp.bfloat16,
+    'bfloat16': jnp.bfloat16,
+    'float16': jnp.float16,
+    'fp16': jnp.float16,
+    'float32': jnp.float32,
+    'fp32': jnp.float32,
+}
+_MODEL_CONFIG_OVERRIDE_KEYS = (
+    'dtype',
+    'param_dtype',
+    'enable_sequence_parallel',
+    'linear_attention_chunk_size',
+    'logits_chunk_size',
+    'remat_config',
+    'remat_policy',
+    'use_flash_attention',
+    'flash_attention_block_size',
+)
+
+
+def _coerce_model_config_override_value(value: Any) -> Any:
+  """Coerce YAML-friendly model config values before AutoModel sees them."""
+  if isinstance(value, str):
+    dtype = _DTYPE_ALIASES.get(value.lower())
+    if dtype is not None:
+      return dtype
+  return value
+
+
+def _model_config_overrides(model_config: dict[str, Any]) -> dict[str, Any]:
+  return {
+      key: _coerce_model_config_override_value(model_config[key])
+      for key in _MODEL_CONFIG_OVERRIDE_KEYS
+      if key in model_config and model_config[key] is not None
+  }
 
 
 def apply_lora_to_model(base_model, mesh, lora_config, rng_seed=0):
@@ -191,11 +228,7 @@ def create_model(
       intermediate_ckpt_dir=model_config.get('intermediate_ckpt_dir'),
       rng_seed=model_config.get('rng_seed', 0),
       model_path=model_config.get('model_path'),
-      use_flash_attention=model_config.get('use_flash_attention', False),
-      flash_attention_block_size=model_config.get(
-          'flash_attention_block_size', 1024
-      ),
-      remat_config=model_config.get('remat_config', 1),
+      **_model_config_overrides(model_config),
   )
 
   if model_config.get('lora_config'):

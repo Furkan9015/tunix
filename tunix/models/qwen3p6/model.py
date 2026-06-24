@@ -1077,6 +1077,7 @@ class Qwen3P6(BackendMappingMixin, nnx.Module):
       attention_mask: jaxtyping.Array,
       output_hidden_states: bool = False,
       return_hidden_states: bool = False,
+      skip_lm_head: bool = False,
   ) -> tuple[jaxtyping.Array, Cache | None]:
     new_cache = None if cache is None else {}
     x = self.embedder.encode(input_tokens)
@@ -1090,13 +1091,17 @@ class Qwen3P6(BackendMappingMixin, nnx.Module):
     x = self.final_norm(x)
     if output_hidden_states:
       self.sow(nnx.Intermediate, 'all_hidden_states', x)
-    if return_hidden_states:
+    if return_hidden_states or skip_lm_head:
       return x, new_cache
-    if self.config.use_tied_embedding:
-      logits = self.embedder.decode(x)
-    else:
-      logits = self.lm_head(x)
+    logits = self.compute_final_logits(x)
     return jnp.astype(logits, jnp.float32), new_cache
+
+  def compute_final_logits(
+      self, hidden_states: jaxtyping.ArrayLike
+  ) -> jaxtyping.Array:
+    if self.config.use_tied_embedding:
+      return self.embedder.decode(hidden_states)
+    return self.lm_head(hidden_states)
 
   def selective_log_softmax_from_hidden(
       self,
