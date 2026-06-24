@@ -981,7 +981,10 @@ def _sync_tied_lm_head_if_needed(
     transferred_target_keys: Target keys that were actually written during the
       transfer loop.
   """
-  if any(key.endswith('lm_head') for key in transferred_target_keys):
+  if any(
+      key.endswith(('lm_head', 'lm_head.weight'))
+      for key in transferred_target_keys
+  ):
     return
 
   embed_param = None

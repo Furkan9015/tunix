@@ -1197,6 +1197,37 @@ class UtilsTest(parameterized.TestCase):
         src.params["lm_head"].value,
     )
 
+  def test_transfer_state_with_mappings_keeps_explicit_lm_head_weight_mapping(
+      self,
+  ):
+    src = MockState({
+        "model.embed_tokens.weight": MockParam(
+            jnp.arange(12, dtype=jnp.float32).reshape(3, 4)
+        ),
+        "lm_head.kernel": MockParam(jnp.full((3, 4), 7.0, dtype=jnp.float32)),
+    })
+    dst = MockState({
+        "model.embed_tokens.weight": MockParam(
+            jnp.zeros((3, 4), dtype=jnp.float32)
+        ),
+        "lm_head.weight": MockParam(jnp.full((3, 4), -1.0, dtype=jnp.float32)),
+    })
+    mappings = {
+        "model.embed_tokens.weight": ("model.embed_tokens.weight", None),
+        "lm_head.kernel": ("lm_head.weight", None),
+    }
+
+    result = utils.transfer_state_with_mappings(src, dst, mappings)
+
+    np.testing.assert_array_equal(
+        result.params["model.embed_tokens.weight"],
+        src.params["model.embed_tokens.weight"].value,
+    )
+    np.testing.assert_array_equal(
+        result.params["lm_head.weight"],
+        src.params["lm_head.kernel"].value,
+    )
+
   def test_transfer_state_with_mappings_syncs_when_lm_head_mapping_unused(self):
     src = MockState({
         "model.embed_tokens.weight": MockParam(
