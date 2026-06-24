@@ -18,6 +18,7 @@
 from collections import abc
 import functools
 import gc
+import inspect
 from absl import logging
 import math
 import re
@@ -658,6 +659,46 @@ def _apply_transpose(
   return val
 
 
+def _hook_for_key(
+    key_mapping_hook_fns: Optional[Dict[str, Callable[..., Any]]],
+    src_key: str,
+) -> Optional[Callable[..., Any]]:
+  """Returns an exact or wildcard hook matching `src_key`."""
+  if not key_mapping_hook_fns:
+    return None
+  if src_key in key_mapping_hook_fns:
+    return key_mapping_hook_fns[src_key]
+  for hook_key, hook_fn in key_mapping_hook_fns.items():
+    if '*' not in hook_key:
+      continue
+    pattern = '^' + re.escape(hook_key).replace('\\*', '.*') + '$'
+    if re.match(pattern, src_key):
+      return hook_fn
+  return None
+
+
+def _call_key_mapping_hook(
+    hook_fn: Callable[..., Any],
+    val: jnp.ndarray,
+    **context,
+) -> jnp.ndarray:
+  """Calls a mapping hook, passing context only when the hook accepts it."""
+  try:
+    signature = inspect.signature(hook_fn)
+  except (TypeError, ValueError):
+    return hook_fn(val)
+
+  parameters = signature.parameters.values()
+  if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters):
+    return hook_fn(val, **context)
+
+  accepted_kwargs = {
+      name: value for name, value in context.items()
+      if name in signature.parameters
+  }
+  return hook_fn(val, **accepted_kwargs)
+
+
 def _repair_configured_reverse_transpose(
     val: jnp.ndarray,
     tgt_shape: Tuple[int, ...],
@@ -1024,6 +1065,10 @@ def transfer_state_with_mappings(
       val,
       tgt_param,
   ) in unscanned_src_to_tgt_flat.items():
+    hook_fn = _hook_for_key(key_mapping_hook_fns, flat_src_key)
+    run_hook_after_shape_align = bool(
+        getattr(hook_fn, 'run_after_shape_align', False)
+    )
     target_value = tgt_param.value
     target_shape = target_value.shape
     target_dtype = target_value.dtype
@@ -1041,11 +1086,36 @@ def transfer_state_with_mappings(
     )
 
     # Apply optional hook function
-    if key_mapping_hook_fns and flat_src_key in key_mapping_hook_fns:
-      val = key_mapping_hook_fns[flat_src_key](val)
+    if hook_fn is not None and not run_hook_after_shape_align:
+      val = _call_key_mapping_hook(
+          hook_fn,
+          val,
+          src_key=flat_src_key,
+          target_key=flat_tgt_key,
+          target_param=tgt_param,
+          target_value=target_value,
+          target_shape=target_shape,
+          target_dtype=target_dtype,
+          rollout_engine=rollout_engine,
+          **kwargs,
+      )
 
     # Align shapes (padding/repeating as needed)
     val = _align_shape(val, target_shape, flat_src_key, rollout_engine, **kwargs)
+
+    if hook_fn is not None and run_hook_after_shape_align:
+      val = _call_key_mapping_hook(
+          hook_fn,
+          val,
+          src_key=flat_src_key,
+          target_key=flat_tgt_key,
+          target_param=tgt_param,
+          target_value=target_value,
+          target_shape=target_shape,
+          target_dtype=target_dtype,
+          rollout_engine=rollout_engine,
+          **kwargs,
+      )
 
     # Cast to target dtype
     val = _apply_dtype_cast(val, target_dtype, flat_src_key)

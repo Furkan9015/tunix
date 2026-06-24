@@ -1261,6 +1261,49 @@ class UtilsTest(parameterized.TestCase):
         np.array([[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]], dtype=np.float32),
     )
 
+  def test_transfer_state_with_mappings_post_align_wildcard_hook(self):
+    src = MockState({
+        "layers.0.proj.kernel": MockParam(
+            jnp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=jnp.float32)
+        )
+    })
+    dst = MockState({
+        "model.layers.0.proj.weight": MockParam(
+            jnp.zeros((3, 2), dtype=jnp.float32)
+        )
+    })
+    mappings = {
+        "layers.*.proj.kernel": ("model.layers.*.proj.weight", (None, None)),
+    }
+    events = []
+
+    def hook(val, *, src_key, target_key, target_shape, **_):
+      events.append((src_key, target_key, val.shape, target_shape))
+      return val + 10
+
+    hook.run_after_shape_align = True
+
+    result = utils.transfer_state_with_mappings(
+        src,
+        dst,
+        mappings,
+        key_mapping_hook_fns={"layers.*.proj.kernel": hook},
+    )
+
+    self.assertEqual(
+        events,
+        [(
+            "layers.0.proj.kernel",
+            "model.layers.0.proj.weight",
+            (3, 2),
+            (3, 2),
+        )],
+    )
+    np.testing.assert_array_equal(
+        result.params["model.layers.0.proj.weight"],
+        np.array([[11.0, 14.0], [12.0, 15.0], [13.0, 16.0]], dtype=np.float32),
+    )
+
   def test_transfer_state_with_mappings_deletes_dst_before_shape_align(self):
     src = MockState({
         "model.weight": MockParam(

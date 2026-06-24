@@ -56,6 +56,96 @@ class _LazyConcatParam:
     )
 
 
+def _infer_output_shards(target_value: Any, dim: int = -1) -> int:
+  """Infer the active output-axis shard count from a target JAX array."""
+  sharding = getattr(target_value, 'sharding', None)
+  mesh = getattr(sharding, 'mesh', None)
+  spec = getattr(sharding, 'spec', None)
+  if mesh is None or spec is None:
+    return 1
+
+  spec_tuple = tuple(spec)
+  if dim < 0:
+    dim += len(spec_tuple)
+  if dim < 0 or dim >= len(spec_tuple):
+    return 1
+
+  axes = spec_tuple[dim]
+  if axes is None:
+    return 1
+  if not isinstance(axes, tuple):
+    axes = (axes,)
+
+  n_shards = 1
+  for axis in axes:
+    if axis is None:
+      continue
+    try:
+      n_shards *= int(mesh.shape[axis])
+    except (KeyError, TypeError):
+      continue
+  return n_shards
+
+
+def _reorder_concatenated_tensor_for_sharding(
+    concatenated_tensor: jnp.ndarray,
+    split_sizes: tuple[int, ...],
+    n_shards: int,
+    dim: int = -1,
+) -> jnp.ndarray:
+  """Match tpu-inference fused-linear layout for output-sharded weights."""
+  if n_shards <= 1:
+    return concatenated_tensor
+  if dim < 0:
+    dim += concatenated_tensor.ndim
+  if sum(split_sizes) != concatenated_tensor.shape[dim]:
+    raise ValueError(
+        'Packed Qwen3.6 tensor shape does not match split sizes: '
+        f'{concatenated_tensor.shape=} {split_sizes=} {dim=}'
+    )
+  for split_size in split_sizes:
+    if split_size % n_shards:
+      raise ValueError(
+          'Packed Qwen3.6 split size must be divisible by output shards: '
+          f'{split_size=} {n_shards=}'
+      )
+
+  old_shape = concatenated_tensor.shape
+  new_shape = old_shape[:dim] + (n_shards, -1) + old_shape[dim + 1:]
+  split_tensors = []
+  start_offset = 0
+  for split_size in split_sizes:
+    index = [slice(None)] * concatenated_tensor.ndim
+    index[dim] = slice(start_offset, start_offset + split_size)
+    split_tensors.append(concatenated_tensor[tuple(index)].reshape(new_shape))
+    start_offset += split_size
+  return jnp.concatenate(split_tensors, axis=dim + 1).reshape(old_shape)
+
+
+def _packed_output_hook(split_sizes: tuple[int, ...]):
+  """Create a post-align hook for tpu-inference merged output projections."""
+
+  def hook(val, *, target_value=None, **_):
+    n_shards = _infer_output_shards(target_value, dim=-1)
+    return _reorder_concatenated_tensor_for_sharding(
+        val, split_sizes, n_shards, dim=-1
+    )
+
+  hook.run_after_shape_align = True
+  return hook
+
+
+TO_HF_HOOK_FNS = {
+    'layers.*.mlp.gate_up_proj.kernel': _packed_output_hook((17408, 17408)),
+    # Full attention q_proj carries [q, output_gate] for Qwen3.5/3.6.
+    'layers.*.attn.qkv_proj.kernel': _packed_output_hook((12288, 1024, 1024)),
+    'layers.*.linear_attn.in_proj_qkvz.kernel': _packed_output_hook(
+        (10240, 6144)
+    ),
+    'layers.*.linear_attn.in_proj_ba.kernel': _packed_output_hook((48, 48)),
+}
+
+
 TO_HF_MAPPINGS: Dict[str, MappingEntry] = {
     'embedder.input_embedding': (
         f'{_VLLM_PREFIX}model.embed_tokens.weight',
@@ -317,7 +407,7 @@ VLLM_JAX_MAPPING: Dict[str, Any] = {
         'layers.*.linear_attn.out_proj.kernel_lora_a': (1, 0),
         'layers.*.linear_attn.out_proj.kernel_lora_b': (1, 0),
     },
-    'to_hf_hook_fns': None,
+    'to_hf_hook_fns': TO_HF_HOOK_FNS,
     'preprocess_src_state': preprocess_src_state,
 }
 

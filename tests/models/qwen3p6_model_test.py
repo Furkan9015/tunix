@@ -15,6 +15,8 @@
 from absl.testing import absltest
 from flax import nnx
 import jax.numpy as jnp
+import numpy as np
+from tunix.models.qwen3p6 import mapping_vllm_jax
 from tunix.models.qwen3p6 import model as qwen3p6_model
 
 
@@ -55,6 +57,21 @@ class Qwen3P6ModelTest(absltest.TestCase):
 
     self.assertEqual(hidden_states.shape, (1, 2, 8))
     self.assertEqual(logits.shape, (1, 2, 16))
+
+  def test_packed_projection_reorder_matches_tpu_inference_layout(self):
+    value = jnp.arange(24, dtype=jnp.float32).reshape(2, 12)
+
+    result = mapping_vllm_jax._reorder_concatenated_tensor_for_sharding(
+        value, split_sizes=(4, 4, 4), n_shards=2, dim=-1
+    )
+
+    np.testing.assert_array_equal(
+        np.asarray(result),
+        np.array([
+            [0, 1, 4, 5, 8, 9, 2, 3, 6, 7, 10, 11],
+            [12, 13, 16, 17, 20, 21, 14, 15, 18, 19, 22, 23],
+        ], dtype=np.float32),
+    )
 
 
 if __name__ == "__main__":
