@@ -110,12 +110,12 @@ rollout_config:
 rollout_engine: "vllm"
 vllm_config:
   model_version: "/dev/shm/models/qwen3p6-27b"
-  hbm_utilization: 0.90
+  hbm_utilization: 0.88
   tpu_backend_type: "jax"
   server_mode: true
   async_scheduling: false
   max_num_seqs: 4
-  max_num_batched_tokens: 3072
+  max_num_batched_tokens: 2048
   kwargs:
     kv_cache_metrics: true
     disable_log_stats: false
