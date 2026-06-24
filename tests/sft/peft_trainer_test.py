@@ -708,6 +708,47 @@ class PeftTrainerTest(parameterized.TestCase):
         TEST_LEARNING_RATE,
     )
 
+  def test_save_last_checkpoint_can_be_disabled(self):
+    trainer = object.__new__(peft_trainer.PeftTrainer)
+    trainer.config = peft_trainer.TrainingConfig(
+        eval_every_n_steps=2,
+        max_steps=10,
+        save_final_checkpoint=False,
+    )
+    trainer.checkpoint_manager = mock.Mock()
+    trainer._train_steps = 10
+    trainer.model = object()
+    trainer.optimizer = object()
+    trainer._lora_enabled = False
+
+    trainer._save_last_checkpoint()
+
+    trainer.checkpoint_manager.latest_step.assert_not_called()
+    trainer.checkpoint_manager.save.assert_not_called()
+
+  def test_save_last_checkpoint_enabled_by_default(self):
+    trainer = object.__new__(peft_trainer.PeftTrainer)
+    trainer.config = peft_trainer.TrainingConfig(
+        eval_every_n_steps=2,
+        max_steps=10,
+    )
+    trainer.checkpoint_manager = mock.Mock()
+    trainer.checkpoint_manager.latest_step.return_value = 9
+    trainer._train_steps = 10
+    trainer.model = object()
+    trainer.optimizer = object()
+    trainer._lora_enabled = False
+
+    trainer._save_last_checkpoint()
+
+    trainer.checkpoint_manager.save.assert_called_once_with(
+        10,
+        trainer.model,
+        trainer.optimizer,
+        save_only_lora_params=False,
+        force=True,
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

@@ -64,6 +64,8 @@ class TrainingConfig:
   checkpoint_root_directory: str | None = None
   # Checkpoint configurations. If None, the default options will be used.
   checkpointing_options: ocp.CheckpointManagerOptions | None = None
+  # Save a final checkpoint when the trainer closes.
+  save_final_checkpoint: bool = True
 
   # Configs for the metrics logger.
   metrics_logging_options: MetricsLoggerOptions | None = None
@@ -766,6 +768,8 @@ class PeftTrainer:
       self.close()
 
   def _save_last_checkpoint(self):
+    if not self.config.save_final_checkpoint:
+      return
     last_saved_step = self.checkpoint_manager.latest_step()
     if last_saved_step is None or last_saved_step < self._train_steps:
       self.checkpoint_manager.save(

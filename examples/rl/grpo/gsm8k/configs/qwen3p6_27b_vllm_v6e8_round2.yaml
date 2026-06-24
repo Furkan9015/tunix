@@ -75,6 +75,7 @@ rl_training_config:
   checkpointing_options:
     max_to_keep: 1
     save_interval_steps: 100
+  save_final_checkpoint: false
   metrics_logging_options:
     project_name: "tunix"
     run_name: "qwen3p6_27b_vllm_v6e8_round2"
