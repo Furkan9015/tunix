@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Tuple
 
+import jax
 import jax.numpy as jnp
 
 Sharding = Tuple[str | None, ...]
@@ -127,6 +128,8 @@ def _packed_output_hook(split_sizes: tuple[int, ...]):
 
   def hook(val, *, target_value=None, **_):
     n_shards = _infer_output_shards(target_value, dim=-1)
+    if n_shards > 1:
+      val = jax.device_put(val, jax.local_devices(backend='cpu')[0])
     return _reorder_concatenated_tensor_for_sharding(
         val, split_sizes, n_shards, dim=-1
     )
