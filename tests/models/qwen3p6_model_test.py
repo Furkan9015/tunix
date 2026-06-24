@@ -73,57 +73,59 @@ class Qwen3P6ModelTest(absltest.TestCase):
         ], dtype=np.float32),
     )
 
-  def test_gdn_qkvz_interleave_matches_qwen3_next_layout(self):
-    num_key_heads = mapping_vllm_jax._LINEAR_NUM_KEY_HEADS
-    key_head_dim = mapping_vllm_jax._LINEAR_KEY_HEAD_DIM
-    value_head_dim = mapping_vllm_jax._LINEAR_VALUE_HEAD_DIM
-    value_heads_per_key = mapping_vllm_jax._LINEAR_VALUE_HEADS_PER_KEY
-    key_dim = num_key_heads * key_head_dim
-    value_dim = mapping_vllm_jax._LINEAR_NUM_VALUE_HEADS * value_head_dim
-
+  def test_gdn_qkvz_packed_reorder_matches_qwen35_runtime_layout(self):
+    key_dim = mapping_vllm_jax._LINEAR_KEY_DIM
+    value_dim = mapping_vllm_jax._LINEAR_VALUE_DIM
     q = jnp.arange(key_dim, dtype=jnp.float32)
     k = 10_000 + jnp.arange(key_dim, dtype=jnp.float32)
     v = 20_000 + jnp.arange(value_dim, dtype=jnp.float32)
     z = 30_000 + jnp.arange(value_dim, dtype=jnp.float32)
-    qkv = jnp.concatenate((q, k, v))[None, :]
+    qkvz = jnp.concatenate((q, k, v, z))[None, :]
 
-    result = mapping_vllm_jax._qwen3_next_interleave_qkvz(qkv, z[None, :])
-    grouped = np.asarray(result[0]).reshape(num_key_heads, -1)
-    group_width = key_head_dim * 2 + value_heads_per_key * value_head_dim * 2
+    result = mapping_vllm_jax._reorder_concatenated_tensor_for_sharding(
+        qkvz,
+        split_sizes=(key_dim, key_dim, value_dim, value_dim),
+        n_shards=4,
+        dim=-1,
+    )
 
-    self.assertEqual(result.shape, (1, key_dim * 2 + value_dim * 2))
-    self.assertEqual(grouped.shape, (num_key_heads, group_width))
-    np.testing.assert_array_equal(grouped[0, :key_head_dim], np.asarray(q[:128]))
+    shard_width = result.shape[-1] // 4
+    shard0 = np.asarray(result[0, :shard_width])
+    np.testing.assert_array_equal(shard0[: key_dim // 4], np.asarray(q[:512]))
     np.testing.assert_array_equal(
-        grouped[0, key_head_dim : 2 * key_head_dim], np.asarray(k[:128])
+        shard0[key_dim // 4 : key_dim // 2], np.asarray(k[:512])
     )
     np.testing.assert_array_equal(
-        grouped[0, 2 * key_head_dim : 2 * key_head_dim + 384],
-        np.asarray(v[:384]),
+        shard0[key_dim // 2 : key_dim // 2 + value_dim // 4],
+        np.asarray(v[:1536]),
     )
-    np.testing.assert_array_equal(grouped[1, :key_head_dim], np.asarray(q[128:256]))
+    np.testing.assert_array_equal(shard0[-value_dim // 4 :], np.asarray(z[:1536]))
 
-  def test_gdn_ba_interleave_matches_qwen3_next_layout(self):
-    num_key_heads = mapping_vllm_jax._LINEAR_NUM_KEY_HEADS
-    value_heads_per_key = mapping_vllm_jax._LINEAR_VALUE_HEADS_PER_KEY
+  def test_gdn_ba_packed_reorder_matches_qwen35_runtime_layout(self):
     num_value_heads = mapping_vllm_jax._LINEAR_NUM_VALUE_HEADS
     b = jnp.arange(num_value_heads, dtype=jnp.float32)
     a = 100 + jnp.arange(num_value_heads, dtype=jnp.float32)
+    ba = jnp.concatenate((b, a))[None, :]
 
-    result = mapping_vllm_jax._qwen3_next_interleave_ba(b[None, :], a[None, :])
-    grouped = np.asarray(result[0]).reshape(num_key_heads, -1)
+    result = mapping_vllm_jax._reorder_concatenated_tensor_for_sharding(
+        ba,
+        split_sizes=(num_value_heads, num_value_heads),
+        n_shards=4,
+        dim=-1,
+    )
 
-    self.assertEqual(result.shape, (1, num_value_heads * 2))
-    self.assertEqual(grouped.shape, (num_key_heads, value_heads_per_key * 2))
-    np.testing.assert_array_equal(grouped[0], np.array([0, 1, 2, 100, 101, 102]))
-    np.testing.assert_array_equal(grouped[1], np.array([3, 4, 5, 103, 104, 105]))
+    shard_width = result.shape[-1] // 4
+    np.testing.assert_array_equal(
+        np.asarray(result[0, :shard_width]),
+        np.concatenate((np.arange(12), 100 + np.arange(12))).astype(np.float32),
+    )
 
-  def test_gdn_qwen3_next_fusions_are_not_qwen35_packed_hooks(self):
-    self.assertNotIn(
+  def test_gdn_qwen35_fusions_use_packed_hooks(self):
+    self.assertIn(
         'layers.*.linear_attn.in_proj_qkvz.kernel',
         mapping_vllm_jax.TO_HF_HOOK_FNS,
     )
-    self.assertNotIn(
+    self.assertIn(
         'layers.*.linear_attn.in_proj_ba.kernel',
         mapping_vllm_jax.TO_HF_HOOK_FNS,
     )
