@@ -21,6 +21,7 @@ from tunix.models.gemma4 import model as gemma4_model
 from tunix.models.llama3 import model as llama3_model
 from tunix.models.qwen2 import model as qwen2_model
 from tunix.models.qwen3 import model as qwen3_model
+from tunix.models.qwen3p6 import model as qwen3p6_model
 
 _ALL_MODEL_MODULES = [
     gemma_model,
@@ -29,6 +30,7 @@ _ALL_MODEL_MODULES = [
     llama3_model,
     qwen2_model,
     qwen3_model,
+    qwen3p6_model,
 ]
 
 

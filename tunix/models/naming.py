@@ -144,6 +144,7 @@ _HF_MODEL_FAMILY_INFO_MAPPING = immutabledict.immutabledict({
     'llama-3.1-': _ModelFamilyInfo(family='llama3p1', config_category='llama3'),
     'llama-3.2-': _ModelFamilyInfo(family='llama3p2', config_category='llama3'),
     'qwen2.5-': _ModelFamilyInfo(family='qwen2p5', config_category='qwen2'),
+    'qwen3.6-': _ModelFamilyInfo(family='qwen3p6', config_category='qwen3p6'),
     'qwen3-': _ModelFamilyInfo(family='qwen3', config_category='qwen3'),
     'deepseek-r1-distill-qwen-': _ModelFamilyInfo(
         family='deepseek_r1_distill_qwen', config_category='qwen2'
@@ -161,6 +162,7 @@ _CONFIG_ID_MODEL_FAMILY_INFO_MAPPING = immutabledict.immutabledict({
     'llama3p1_': _ModelFamilyInfo(family='llama3p1', config_category='llama3'),
     'llama3p2_': _ModelFamilyInfo(family='llama3p2', config_category='llama3'),
     'qwen2p5_': _ModelFamilyInfo(family='qwen2p5', config_category='qwen2'),
+    'qwen3p6_': _ModelFamilyInfo(family='qwen3p6', config_category='qwen3p6'),
     'qwen3_': _ModelFamilyInfo(family='qwen3', config_category='qwen3'),
     'deepseek_r1_distill_qwen_': _ModelFamilyInfo(
         family='deepseek_r1_distill_qwen', config_category='qwen2'
