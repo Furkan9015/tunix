@@ -110,7 +110,7 @@ rollout_config:
 rollout_engine: "vllm"
 vllm_config:
   model_version: "/dev/shm/models/qwen3p6-27b"
-  hbm_utilization: 0.88
+  hbm_utilization: 0.825
   tpu_backend_type: "jax"
   server_mode: true
   async_scheduling: false

@@ -186,6 +186,7 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
       self,
       updated_weights: jaxtyping.PyTree,
       filter_types: Optional[Tuple[Any, ...]] = None,
+      reinitialize_kv_cache: bool = True,
   ):
     del filter_types
 
@@ -257,17 +258,29 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
       else:
         self._model_runner.state_leaves = self._model_runner.state
 
+    if reinitialize_kv_cache:
+      self.reinitialize_kv_cache()
+
+  def load_checkpoint(
+      self,
+      path_or_weights: str | jaxtyping.PyTree,
+      reinitialize_kv_cache: bool = True,
+  ):
+    # TODO(b/434741253): Consider support orbax checkpoint loading
+    if isinstance(path_or_weights, jaxtyping.PyTree):
+      self.update_params(
+          updated_weights=path_or_weights,
+          filter_types=None,
+          reinitialize_kv_cache=reinitialize_kv_cache,
+      )
+    else:
+      raise NotImplementedError("Only support in memory weight sync as of now.")
+
+  def reinitialize_kv_cache(self):
     if self.llm is not None:
       self.llm.collective_rpc("reinitialize_kv_cache")
     elif self._driver is not None:
       self._driver.llm_engine.collective_rpc("reinitialize_kv_cache")
-
-  def load_checkpoint(self, path_or_weights: str | jaxtyping.PyTree):
-    # TODO(b/434741253): Consider support orbax checkpoint loading
-    if isinstance(path_or_weights, jaxtyping.PyTree):
-      self.update_params(updated_weights=path_or_weights, filter_types=None)
-    else:
-      raise NotImplementedError("Only support in memory weight sync as of now.")
 
   def _vllm_config(self, config: VllmConfig):
     """Setup vllm config from Tunix Vllm config."""

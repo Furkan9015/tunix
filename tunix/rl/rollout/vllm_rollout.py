@@ -85,7 +85,8 @@ class VllmRollout(base_rollout.BaseRollout):
         ),
     )
     state = nnx.state(model)
-    self._sampler.load_checkpoint(state)
+    self._kv_cache_ready = False
+    self._sampler.load_checkpoint(state, reinitialize_kv_cache=False)
 
   @property
   def mesh(self) -> jax.sharding.Mesh:
@@ -98,6 +99,9 @@ class VllmRollout(base_rollout.BaseRollout):
       **kwargs,
   ) -> base_rollout.RolloutOutput:
     """Generates samples from the model."""
+    if not self._kv_cache_ready:
+      self._sampler.reinitialize_kv_cache()
+      self._kv_cache_ready = True
     self.output = self._sampler(
         input_strings=prompts,
         max_generation_steps=rollout_config.max_tokens_to_generate,
@@ -134,7 +138,10 @@ class VllmRollout(base_rollout.BaseRollout):
       params: jaxtyping.PyTree,
       filter_types: Optional[Tuple[Any, ...]] = None,
   ) -> None:
-    self._sampler.update_params(params, filter_types)
+    self._sampler.update_params(
+        params, filter_types, reinitialize_kv_cache=False
+    )
+    self._kv_cache_ready = False
 
   def pad_id(self) -> int:
     return self._sampler.tokenizer.pad_id()
