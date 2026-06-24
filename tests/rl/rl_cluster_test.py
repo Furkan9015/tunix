@@ -868,6 +868,88 @@ class RlClusterTest(parameterized.TestCase):
     self.assertTrue(invoked)
     self.assertEqual(nn_partitioning.get_axis_rules(), ())
 
+  def test_ref_logps_offloads_actor_state_for_vllm_rollout(self):
+    mesh = Mesh(np.array(jax.devices()).reshape(1, -1), ('fsdp', 'tp'))
+    cluster_config = rl_cluster_lib.ClusterConfig(
+        role_to_mesh={
+            rl_cluster_lib.Role.ACTOR: mesh,
+            rl_cluster_lib.Role.REFERENCE: mesh,
+            rl_cluster_lib.Role.ROLLOUT: mesh,
+        },
+        rollout_engine='vanilla',
+        offload_to_cpu=False,
+        training_config=rl_cluster_lib.RLTrainingConfig(
+            actor_optimizer=optax.sgd(1e-3),
+            eval_every_n_steps=1,
+            max_steps=10,
+            gradient_accumulation_steps=None,
+        ),
+        rollout_config=base_rollout.RolloutConfig(
+            max_tokens_to_generate=10,
+            max_prompt_length=256,
+            kv_cache_size=1024,
+            data_type=jnp.bfloat16,
+        ),
+    )
+    vocab = tc.MockVocab()
+    model = tc.ToyTransformer(
+        config=tc.ModelConfig(vocab_size=vocab.GetPieceSize()), rngs=nnx.Rngs(0)
+    )
+    ref_model = tc.ToyTransformer(
+        config=tc.ModelConfig(vocab_size=vocab.GetPieceSize()), rngs=nnx.Rngs(0)
+    )
+    rl_cluster = rl_cluster_lib.RLCluster(
+        actor=model,
+        reference=ref_model,
+        tokenizer=vocab,
+        cluster_config=cluster_config,
+    )
+    rl_cluster.rollout.offloads_weights_to_cpu = True
+    events = []
+
+    def ref_logps(*args, **kwargs):  # pylint: disable=unused-argument
+      events.append(('ref_logps', None))
+      return jnp.zeros((1, 1))
+
+    with mock.patch.object(
+        rl_cluster, '_is_trainer_state_on_device', return_value=True
+    ), mock.patch.object(
+        rl_cluster,
+        '_put_trainer_on_memory_kind',
+        side_effect=lambda trainer, memory_kind: events.append(
+            ('trainer', memory_kind)
+        ),
+    ), mock.patch.object(
+        rl_cluster,
+        '_put_inference_model_on_memory_kind',
+        side_effect=lambda role, memory_kind: events.append(
+            (role, memory_kind)
+        ),
+    ):
+      old_fn = rl_cluster.inference_worker.get_ref_per_token_logps
+      try:
+        rl_cluster.inference_worker.get_ref_per_token_logps = ref_logps
+        rl_cluster.get_ref_per_token_logps(
+            prompt_tokens=jnp.zeros((1, 1)),
+            completion_tokens=jnp.zeros((1, 1)),
+            pad_id=0,
+            eos_id=1,
+            micro_batch_size=1,
+        )
+      finally:
+        rl_cluster.inference_worker.get_ref_per_token_logps = old_fn
+
+    self.assertEqual(
+        events,
+        [
+            ('trainer', 'pinned_host'),
+            ('reference', 'device'),
+            ('ref_logps', None),
+            ('reference', 'pinned_host'),
+            ('trainer', rl_cluster._default_memory_kind),
+        ],
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

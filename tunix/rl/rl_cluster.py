@@ -652,6 +652,13 @@ class RLCluster:
     self._put_model_on_memory_kind(model, memory_kind)
     self.inference_worker.refresh_model_state(role)
 
+  def _is_trainer_state_on_device(self, trainer: rl_trainer.Trainer) -> bool:
+    return self._is_state_on_device(nnx.state(trainer.model)) or (
+        self._is_state_on_device(
+            nnx.state(trainer.optimizer, nnx.optimizer.OptState)
+        )
+    )
+
   def _update_models_sharing_weights(
       self,
       params: jaxtyping.PyTree,
@@ -1056,37 +1063,61 @@ class RLCluster:
     micro_batch_size = micro_batch_size or batch_size
 
     with self._get_mesh_and_logical_axis_rules_cm(Role.REFERENCE):
-      # This assumes reference model shards same data sharding as actor, which
-      # should be true as ref model and policy model shares same architecture.
-      dest_prompt_tokens = sharding_utils.shard_input(
-          prompt_tokens,
-          self.cluster_config.training_config.data_sharding_axis,
+      rollout_offloads_weights = getattr(
+          self.rollout, "offloads_weights_to_cpu", False
       )
-      dest_completion_tokens = sharding_utils.shard_input(
-          completion_tokens,
-          self.cluster_config.training_config.data_sharding_axis,
-      )
-      self._maybe_load_model_from_cpu(
-          self.inference_worker.get_model("reference"), Role.REFERENCE
-      )
-      temperature = self.get_rollout_config(mode=Mode.TRAIN).temperature
-      outs = []
-      for batch_slice in rl_utils.chunk_slices_by_size(
-          stop=batch_size, step=micro_batch_size
-      ):
-        outs.append(
-            self.inference_worker.get_ref_per_token_logps(
-                dest_prompt_tokens[batch_slice],
-                dest_completion_tokens[batch_slice],
-                pad_id,
-                eos_id,
-                temperature=temperature,
-            )
+      actor_trainer_state_on_device = False
+      if rollout_offloads_weights:
+        actor_trainer_state_on_device = self._is_trainer_state_on_device(
+            self.actor_trainer
         )
-      ref_per_token_logps = jnp.concatenate(outs, axis=0)
-      self._maybe_offload_model_to_cpu(
-          self.inference_worker.get_model("reference"), Role.REFERENCE
-      )
+        if actor_trainer_state_on_device:
+          self._put_trainer_on_memory_kind(self.actor_trainer, "pinned_host")
+          gc.collect()
+
+      try:
+        # This assumes reference model shards same data sharding as actor, which
+        # should be true as ref model and policy model shares same architecture.
+        dest_prompt_tokens = sharding_utils.shard_input(
+            prompt_tokens,
+            self.cluster_config.training_config.data_sharding_axis,
+        )
+        dest_completion_tokens = sharding_utils.shard_input(
+            completion_tokens,
+            self.cluster_config.training_config.data_sharding_axis,
+        )
+        if rollout_offloads_weights:
+          self._put_inference_model_on_memory_kind("reference", "device")
+        else:
+          self._maybe_load_model_from_cpu(
+              self.inference_worker.get_model("reference"), Role.REFERENCE
+          )
+        temperature = self.get_rollout_config(mode=Mode.TRAIN).temperature
+        outs = []
+        for batch_slice in rl_utils.chunk_slices_by_size(
+            stop=batch_size, step=micro_batch_size
+        ):
+          outs.append(
+              self.inference_worker.get_ref_per_token_logps(
+                  dest_prompt_tokens[batch_slice],
+                  dest_completion_tokens[batch_slice],
+                  pad_id,
+                  eos_id,
+                  temperature=temperature,
+              )
+          )
+        ref_per_token_logps = jnp.concatenate(outs, axis=0)
+      finally:
+        if rollout_offloads_weights:
+          self._put_inference_model_on_memory_kind("reference", "pinned_host")
+        else:
+          self._maybe_offload_model_to_cpu(
+              self.inference_worker.get_model("reference"), Role.REFERENCE
+          )
+        if rollout_offloads_weights and actor_trainer_state_on_device:
+          self._put_trainer_on_memory_kind(
+              self.actor_trainer, self._default_memory_kind
+          )
       return ref_per_token_logps
 
   def get_old_per_token_logps(
