@@ -130,6 +130,26 @@ class ConfigTest(parameterized.TestCase):
       ]
       self.run_test_peft_trainer(config.initialize(argv))
 
+  def test_cli_nested_override_merges_rl_optimizer_config(self):
+    with mock.patch.dict(os.environ, {"HF_TOKEN": "dummy"}):
+      argv = [
+          "grpo_main",
+          "base_config.yaml",
+          "rl_training_config.max_steps=1",
+          "rl_training_config.actor_optimizer_config.decay_steps=1",
+          "rl_training_config.checkpointing_options.save_interval_steps=100",
+      ]
+      hp = config.initialize(argv)
+    rl_config = hp.config["rl_training_config"]
+
+    self.assertEqual(rl_config["max_steps"], 1)
+    self.assertEqual(rl_config["actor_optimizer_config"]["decay_steps"], 1)
+    self.assertEqual(rl_config["actor_optimizer_config"]["opt_type"], "adamw")
+    self.assertEqual(
+        rl_config["checkpointing_options"]["save_interval_steps"], 100
+    )
+    self.assertEqual(rl_config["checkpointing_options"]["max_to_keep"], 1)
+
   @parameterized.named_parameters(
       dict(
           testcase_name="kaggle_with_ckpt",

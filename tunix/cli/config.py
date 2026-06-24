@@ -967,7 +967,15 @@ class HyperParameters:
       if new_proposal is None:
         raw_keys[k] = None
       elif isinstance(new_proposal, type(raw_data_from_yaml[k])):
-        raw_keys[k] = new_proposal  # take the raw data, no type conversion
+        if isinstance(
+            new_proposal,
+            collections.abc.Mapping | omegaconf.dictconfig.DictConfig,
+        ):
+          raw_keys[k] = self.update_dict(
+              schema=raw_data_from_yaml[k], source=new_proposal
+          )
+        else:
+          raw_keys[k] = new_proposal  # take the raw data, no type conversion
       else:
         parsed_new_proposal = _yaml_types_to_parser[
             type(raw_data_from_yaml[k])
@@ -976,7 +984,7 @@ class HyperParameters:
         )  # take the command line value, but type it like the config value.
 
         if isinstance(parsed_new_proposal, dict):
-          if k in self.replace_keys:
+          if k in self.replace_keys and not parsed_new_proposal:
             raw_keys[k] = parsed_new_proposal
           else:
             # merge the dict recursively
