@@ -20,10 +20,16 @@ export VLLM_TPU_RPA_VERSION="${VLLM_TPU_RPA_VERSION:-2}"
 export DISABLE_MOSAIC_ATTN="${DISABLE_MOSAIC_ATTN:-1}"
 export TPU_BACKEND_TYPE="${TPU_BACKEND_TYPE:-jax}"
 export HF_TOKEN="${HF_TOKEN:-}"
+export TMPDIR="${TMPDIR:-/dev/shm/tmp}"
+export HF_HOME="${HF_HOME:-/dev/shm/hf_home}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-${HF_HOME}/hub}"
+export JAX_COMPILATION_CACHE_DIR="${JAX_COMPILATION_CACHE_DIR:-/dev/shm/jax_compilation_cache}"
 
 MODEL_ID="${MODEL_ID:-Qwen/Qwen3.6-27B}"
 MODEL_DIR="${MODEL_DIR:-/dev/shm/models/qwen3p6-27b}"
 CONFIG_PATH="${CONFIG_PATH:-examples/rl/grpo/gsm8k/configs/qwen3p6_27b_vllm_v6e8_full_load.yaml}"
+
+mkdir -p "${TMPDIR}" "${HF_HOME}" "${HF_HUB_CACHE}" "${JAX_COMPILATION_CACHE_DIR}"
 
 cd "$(dirname "$0")/../../../.."
 
