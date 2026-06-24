@@ -64,6 +64,9 @@ class VllmRollout(base_rollout.BaseRollout):
             expert_parallel_size=rollout_config.expert_parallel_size,
             delete_dst_buffers=rollout_config.rollout_vllm_delete_dst_buffers,
             reshard_chunk_size=rollout_config.rollout_vllm_reshard_chunk_size,
+            offload_weights_to_cpu=(
+                rollout_config.rollout_vllm_offload_weights_to_cpu
+            ),
             engine_kwargs={
                 "model": rollout_config.rollout_vllm_model_version,
                 "max_model_len": cache_config_or_size,
@@ -84,9 +87,13 @@ class VllmRollout(base_rollout.BaseRollout):
             sampling_kwargs=rollout_config.rollout_vllm_sampling_kwargs,
         ),
     )
+    self._offload_weights_to_cpu = (
+        rollout_config.rollout_vllm_offload_weights_to_cpu
+    )
     state = nnx.state(model)
     self._kv_cache_ready = False
     self._sampler.load_checkpoint(state, reinitialize_kv_cache=False)
+    self.release_after_generation()
 
   @property
   def mesh(self) -> jax.sharding.Mesh:
@@ -99,9 +106,7 @@ class VllmRollout(base_rollout.BaseRollout):
       **kwargs,
   ) -> base_rollout.RolloutOutput:
     """Generates samples from the model."""
-    if not self._kv_cache_ready:
-      self._sampler.reinitialize_kv_cache()
-      self._kv_cache_ready = True
+    self.prepare_for_generation()
     self.output = self._sampler(
         input_strings=prompts,
         max_generation_steps=rollout_config.max_tokens_to_generate,
@@ -142,6 +147,25 @@ class VllmRollout(base_rollout.BaseRollout):
         params, filter_types, reinitialize_kv_cache=False
     )
     self._kv_cache_ready = False
+    self.release_after_generation()
+
+  @property
+  def offloads_weights_to_cpu(self) -> bool:
+    return self._offload_weights_to_cpu
+
+  def prepare_for_generation(self) -> None:
+    if self._offload_weights_to_cpu:
+      self._sampler.put_weights_on_memory_kind("device")
+    if not self._kv_cache_ready:
+      self._sampler.reinitialize_kv_cache()
+      self._kv_cache_ready = True
+
+  def release_after_generation(self) -> None:
+    if not self._offload_weights_to_cpu:
+      return
+    self._sampler.delete_kv_cache()
+    self._kv_cache_ready = False
+    self._sampler.put_weights_on_memory_kind("pinned_host")
 
   def pad_id(self) -> int:
     return self._sampler.tokenizer.pad_id()

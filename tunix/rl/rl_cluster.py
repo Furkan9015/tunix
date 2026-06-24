@@ -609,10 +609,48 @@ class RLCluster:
     if memory_kind not in ["pinned_host", "device"]:
       raise ValueError(f"Unsupported memory kind. Received: {memory_kind}")
     original_variables = nnx.variables(model)
-    new_variables = rl_utils.put_params_on_memory_kind(
+    new_variables = self._put_pytree_on_memory_kind(
         original_variables, memory_kind
     )
     nnx.update(model, new_variables)
+
+  def _put_pytree_on_memory_kind(
+      self, pytree: jaxtyping.PyTree, memory_kind: str
+  ) -> jaxtyping.PyTree:
+    new_pytree = rl_utils.put_params_on_memory_kind(pytree, memory_kind)
+    if memory_kind == "pinned_host" and new_pytree is not pytree:
+      jax.block_until_ready(new_pytree)
+      for old_leaf, new_leaf in zip(
+          jax.tree_util.tree_leaves(pytree),
+          jax.tree_util.tree_leaves(new_pytree),
+      ):
+        sharding = getattr(old_leaf, "sharding", None)
+        if (
+            old_leaf is not new_leaf
+            and getattr(sharding, "memory_kind", None)
+            == self._default_memory_kind
+            and hasattr(old_leaf, "delete")
+        ):
+          old_leaf.delete()
+    return new_pytree
+
+  def _put_trainer_on_memory_kind(
+      self, trainer: rl_trainer.Trainer, memory_kind: str
+  ):
+    self._put_model_on_memory_kind(trainer.model, memory_kind)
+    optimizer_state = nnx.state(trainer.optimizer, nnx.optimizer.OptState)
+    optimizer_state = self._put_pytree_on_memory_kind(
+        optimizer_state, memory_kind
+    )
+    nnx.update(trainer.optimizer, optimizer_state)
+
+  def _put_inference_model_on_memory_kind(self, role: str, memory_kind: str):
+    try:
+      model = self.inference_worker.get_model(role)
+    except ValueError:
+      return
+    self._put_model_on_memory_kind(model, memory_kind)
+    self.inference_worker.refresh_model_state(role)
 
   def _update_models_sharing_weights(
       self,
@@ -917,8 +955,9 @@ class RLCluster:
 
     with self._get_mesh_and_logical_axis_rules_cm(Role.ROLLOUT) as (mesh, _):
       model = self.rollout.model()
-      self._maybe_load_model_from_cpu(model, Role.ROLLOUT)
-      if self.cluster_config.offload_to_cpu:
+      if model is not None:
+        self._maybe_load_model_from_cpu(model, Role.ROLLOUT)
+      if self.cluster_config.offload_to_cpu and model is not None:
         self.rollout.update_params(nnx.state(model))
 
       if isinstance(self.cluster_config.rollout_config, dict):
@@ -938,21 +977,40 @@ class RLCluster:
       if trace_tags:
         perf_tags.update(trace_tags)
 
-      with self._perf.span("rollout", mesh.devices) as span, self._perf_v2.span(
-          perf_constants.ROLLOUT,
-          mesh.devices,
-          tags=perf_tags,
-      ) as span_v2:
-        outputs = [
-            self.rollout.generate(string_prompts[s], rollout_config)
-            for s in rl_utils.chunk_slices_by_size(
-                stop=len(string_prompts), step=micro_batch_size
-            )
-        ]
-        span.device_end([o.tokens for o in outputs])
-        span_v2.async_end([o.tokens for o in outputs])
-      self._maybe_offload_model_to_cpu(model, Role.ROLLOUT)
-      if self.cluster_config.offload_to_cpu:
+      rollout_offloads_weights = getattr(
+          self.rollout, "offloads_weights_to_cpu", False
+      )
+      if rollout_offloads_weights:
+        self._put_trainer_on_memory_kind(self.actor_trainer, "pinned_host")
+        self._put_inference_model_on_memory_kind("reference", "pinned_host")
+        gc.collect()
+      try:
+        if hasattr(self.rollout, "prepare_for_generation"):
+          self.rollout.prepare_for_generation()
+        with self._perf.span(
+            "rollout", mesh.devices
+        ) as span, self._perf_v2.span(
+            perf_constants.ROLLOUT,
+            mesh.devices,
+            tags=perf_tags,
+        ) as span_v2:
+          outputs = [
+              self.rollout.generate(string_prompts[s], rollout_config)
+              for s in rl_utils.chunk_slices_by_size(
+                  stop=len(string_prompts), step=micro_batch_size
+              )
+          ]
+          span.device_end([o.tokens for o in outputs])
+          span_v2.async_end([o.tokens for o in outputs])
+      finally:
+        if hasattr(self.rollout, "release_after_generation"):
+          self.rollout.release_after_generation()
+        if rollout_offloads_weights:
+          self._put_inference_model_on_memory_kind("reference", "device")
+          self._put_trainer_on_memory_kind(self.actor_trainer, "device")
+      if model is not None:
+        self._maybe_offload_model_to_cpu(model, Role.ROLLOUT)
+      if self.cluster_config.offload_to_cpu and model is not None:
         self.rollout.update_params(nnx.state(model))
 
     texts = list(itertools.chain.from_iterable(out.text for out in outputs))
@@ -1153,7 +1211,14 @@ class RLCluster:
 
   def sync_weights(self):
     """Syncs the weights of between the sampler model and trainer model."""
-    if jax.devices() and jax.default_backend() not in ["tpu", "gpu"]:
+    rollout_offloads_weights = getattr(
+        self.rollout, "offloads_weights_to_cpu", False
+    )
+    if (
+        jax.devices()
+        and jax.default_backend() not in ["tpu", "gpu"]
+        and not rollout_offloads_weights
+    ):
       cm = contextlib.ExitStack()
       cm.enter_context(jax.transfer_guard_device_to_host("disallow_explicit"))
       cm.enter_context(jax.transfer_guard_host_to_device("disallow_explicit"))

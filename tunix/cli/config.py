@@ -666,10 +666,26 @@ class HyperParameters:
     opt_kwargs = self._extract_kwargs(
         opt_func, optimizer_config, config_path_info, learning_rate_val
     )
+    if isinstance(opt_kwargs.get("mu_dtype"), str):
+      dtype_name = opt_kwargs["mu_dtype"]
+      if hasattr(jax.numpy, dtype_name):
+        opt_kwargs["mu_dtype"] = getattr(jax.numpy, dtype_name)
+      else:
+        try:
+          opt_kwargs["mu_dtype"] = jax.numpy.dtype(dtype_name)
+        except TypeError as exc:
+          raise ValueError(
+              f"Config {config_path_info}: invalid mu_dtype '{dtype_name}'."
+          ) from exc
     # Wrap the optimizer function with inject_hyperparams so that
     # the learning rate can be tracked and logged during training.
+    static_args = tuple(
+        name for name in ("mu_dtype", "mask") if name in opt_kwargs
+    )
     injected_opt_func = optax.inject_hyperparams(
-        opt_func, hyperparam_dtype=jax.numpy.float32
+        opt_func,
+        static_args=static_args,
+        hyperparam_dtype=jax.numpy.float32,
     )
     # Call the optimizer function with the extracted kwargs
     try:

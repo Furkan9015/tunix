@@ -579,6 +579,7 @@ vllm_config:
   server_mode: true
   server_mode_submission_threshold: 3840
   server_mode_submission_timeout_s: 1.5
+  offload_weights_to_cpu: true
 """
     p = _make_pipeline_with_cli_args(extra, ["rollout_engine=vllm"])
     role_to_mesh = {
@@ -589,6 +590,7 @@ vllm_config:
     cfg = p.create_rollout_config(role_to_mesh=role_to_mesh)
     self.assertEqual(cfg.rollout_vllm_server_mode_submission_threshold, 3840)
     self.assertEqual(cfg.rollout_vllm_server_mode_submission_timeout_s, 1.5)
+    self.assertTrue(cfg.rollout_vllm_offload_weights_to_cpu)
 
 
 # ---------------------------------------------------------------------------

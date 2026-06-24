@@ -181,6 +181,11 @@ class RolloutConfig:
   # Set to a smaller value to reduce peak HBM pressure on large models.
   rollout_vllm_reshard_chunk_size: Optional[int] = None
 
+  # Offload vLLM weights to pinned host memory when rollout is idle. This is
+  # useful for colocated full-weight training where actor optimizer state and
+  # rollout weights otherwise overlap in HBM.
+  rollout_vllm_offload_weights_to_cpu: bool = False
+
   # Additional keyword arguments forwarded directly to the vLLM engine constructor.
   rollout_vllm_kwargs: dict[str, Any] = dataclasses.field(default_factory=dict)
 

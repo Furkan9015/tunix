@@ -95,6 +95,7 @@ rl_training_config:
     decay_steps: 8
     b1: 0.9
     b2: 0.99
+    mu_dtype: "bfloat16"
     weight_decay: 0.01
     max_grad_norm: 0.1
   critic_optimizer_config: null
@@ -114,6 +115,7 @@ vllm_config:
   tpu_backend_type: "jax"
   server_mode: true
   async_scheduling: false
+  offload_weights_to_cpu: true
   max_num_seqs: 4
   max_num_batched_tokens: 2048
   kwargs:

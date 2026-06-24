@@ -32,6 +32,7 @@ from tunix.generate import utils
 from tunix.generate.mappings import MappingConfig
 from tunix.generate.vllm_async_driver import VLLMInProcessDriver
 from tunix.rl import reshard
+from tunix.rl import utils as rl_utils
 from vllm import LLM
 from vllm.engine.arg_utils import EngineArgs
 from vllm.inputs import TokensPrompt
@@ -72,6 +73,7 @@ class VllmConfig:
   # Default to True to ensure old weights are deleted to free up HBM memory
   delete_dst_buffers: bool = True
   reshard_chunk_size: Optional[int] = None
+  offload_weights_to_cpu: bool = False
 
   # vLLM engine args that can be directly passed in without additional processing, e.g. max_model_len, async_scheduling, etc.
   engine_kwargs: dataclasses.InitVar[Optional[Dict[str, Any]]] = None
@@ -190,15 +192,13 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
   ):
     del filter_types
 
-    if self.llm is not None:
-      self.llm.reset_prefix_cache()
-      self.llm.collective_rpc("delete_kv_cache") # will free hbm
-    elif self._driver is not None:
-      self._driver.llm_engine.reset_prefix_cache()
-      self._driver.llm_engine.collective_rpc("delete_kv_cache")
+    self.delete_kv_cache()
 
     # Synchronization point before weight sync
     jax.effects_barrier()
+
+    if self.config.offload_weights_to_cpu:
+      self.put_weights_on_memory_kind("device")
 
     if self.to_hf_key_mappings:
       preprocess_fn = self.config.mapping_config.preprocess_src_state
@@ -250,13 +250,7 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
           reshard_chunk_size=self.config.reshard_chunk_size,
       )
 
-    if hasattr(self._model_runner, "state_leaves"):
-      if isinstance(self._model_runner.state, nnx.State):
-        self._model_runner.state_leaves = tuple(
-            jax.tree_util.tree_leaves(self._model_runner.state)
-        )
-      else:
-        self._model_runner.state_leaves = self._model_runner.state
+    self._refresh_state_leaves()
 
     if reinitialize_kv_cache:
       self.reinitialize_kv_cache()
@@ -281,6 +275,51 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
       self.llm.collective_rpc("reinitialize_kv_cache")
     elif self._driver is not None:
       self._driver.llm_engine.collective_rpc("reinitialize_kv_cache")
+
+  def delete_kv_cache(self):
+    """Deletes vLLM KV cache buffers to release HBM."""
+    if self.llm is not None:
+      self.llm.reset_prefix_cache()
+      self.llm.collective_rpc("delete_kv_cache")
+    elif self._driver is not None:
+      self._driver.llm_engine.reset_prefix_cache()
+      self._driver.llm_engine.collective_rpc("delete_kv_cache")
+    jax.effects_barrier()
+    gc.collect()
+
+  def _refresh_state_leaves(self):
+    if not hasattr(self._model_runner, "state_leaves"):
+      return
+    if isinstance(self._model_runner.state, nnx.State):
+      self._model_runner.state_leaves = tuple(
+          jax.tree_util.tree_leaves(self._model_runner.state)
+      )
+    else:
+      self._model_runner.state_leaves = self._model_runner.state
+
+  def put_weights_on_memory_kind(self, memory_kind: str):
+    """Moves vLLM model weights between device and host memory."""
+    if memory_kind not in ("device", "pinned_host"):
+      raise ValueError(f"Unsupported vLLM weight memory kind: {memory_kind}")
+    old_state = self.transformer_state
+    new_state = rl_utils.put_params_on_memory_kind(old_state, memory_kind)
+    if memory_kind == "pinned_host" and new_state is not old_state:
+      jax.block_until_ready(new_state)
+      for old_leaf, new_leaf in zip(
+          jax.tree_util.tree_leaves(old_state),
+          jax.tree_util.tree_leaves(new_state),
+      ):
+        sharding = getattr(old_leaf, "sharding", None)
+        if (
+            old_leaf is not new_leaf
+            and getattr(sharding, "memory_kind", None) == "device"
+            and hasattr(old_leaf, "delete")
+        ):
+          old_leaf.delete()
+    self._model_runner.state = new_state
+    self._refresh_state_leaves()
+    jax.effects_barrier()
+    gc.collect()
 
   def _vllm_config(self, config: VllmConfig):
     """Setup vllm config from Tunix Vllm config."""

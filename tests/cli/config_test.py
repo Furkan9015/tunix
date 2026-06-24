@@ -205,6 +205,27 @@ class ConfigTest(parameterized.TestCase):
     self.assertIsNotNone(optimizer)
     self.assertIsInstance(optimizer, expected_type)
 
+  def test_create_optimizer_converts_mu_dtype(self):
+    with mock.patch.dict(os.environ, {"HF_TOKEN": "dummy"}):
+      hp = self.initialize_config([
+          "optimizer_config.opt_type=adamw",
+          "optimizer_config.learning_rate=0.001",
+          "optimizer_config.mu_dtype=bfloat16",
+      ])
+    optimizer = hp.create_optimizer("optimizer_config")
+    opt_state = optimizer.init(
+        {"w": jax.numpy.ones((2,), dtype=jax.numpy.float32)}
+    )
+
+    self.assertIn(
+        jax.numpy.dtype(jax.numpy.bfloat16),
+        {
+            leaf.dtype
+            for leaf in jax.tree_util.tree_leaves(opt_state)
+            if hasattr(leaf, "dtype")
+        },
+    )
+
   @parameterized.named_parameters(
       dict(
           testcase_name="unknown_name",

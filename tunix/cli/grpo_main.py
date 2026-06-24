@@ -401,6 +401,9 @@ class GrpoPipeline(config.HyperParameters):
           data_parallel_size=rollout_shape[0],
           rollout_vllm_max_num_seqs=max_num_seqs,
           rollout_vllm_max_num_batched_tokens=max_batched_tokens,
+          rollout_vllm_offload_weights_to_cpu=vllm.get(
+              "offload_weights_to_cpu", False
+          ),
           rollout_vllm_kwargs=vllm.get(
               "kwargs",
               {

@@ -94,3 +94,8 @@ class InferenceWorker:
     if role not in self._models:
       raise ValueError(f"Model role {role} is not available.")
     return self._models[role]
+
+  def refresh_model_state(self, role: str) -> None:
+    if role not in self._models:
+      raise ValueError(f"Model role {role} is not available.")
+    self._model_states[role] = nnx.split(self._models[role])

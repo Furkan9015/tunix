@@ -78,6 +78,50 @@ class VllmRolloutTest(absltest.TestCase):
     rollout.generate(["prompt"], rollout_config)
     self.assertEqual(sampler.reinitialize_kv_cache.call_count, 2)
 
+  def test_offloads_weights_when_rollout_is_idle(self):
+    sampler = mock.MagicMock()
+    sampler.mesh = mock.MagicMock()
+    sampler.return_value = SimpleNamespace(
+        text=["answer"],
+        tokens=[np.array([1], dtype=np.int32)],
+        padded_prompt_tokens=np.array([[0]], dtype=np.int32),
+        logprobs=None,
+    )
+    rollout_config = base_rollout.RolloutConfig(
+        max_tokens_to_generate=8,
+        max_prompt_length=4,
+        rollout_vllm_model_version="dummy-model",
+        rollout_vllm_offload_weights_to_cpu=True,
+    )
+
+    with mock.patch.object(
+        vllm_rollout.mappings.MappingConfig, "build", return_value=mock.Mock()
+    ), mock.patch.object(
+        vllm_rollout.vllm_sampler, "VllmSampler", return_value=sampler
+    ):
+      rollout = vllm_rollout.VllmRollout(
+          model=_TinyModel(),
+          tokenizer=mock.MagicMock(),
+          cache_config_or_size=32,
+          mesh=mock.MagicMock(),
+          rollout_config=rollout_config,
+      )
+
+    sampler.load_checkpoint.assert_called_once()
+    sampler.delete_kv_cache.assert_called_once()
+    sampler.put_weights_on_memory_kind.assert_called_once_with("pinned_host")
+
+    rollout.prepare_for_generation()
+    sampler.put_weights_on_memory_kind.assert_any_call("device")
+    sampler.reinitialize_kv_cache.assert_called_once()
+
+    rollout.release_after_generation()
+    self.assertEqual(sampler.delete_kv_cache.call_count, 2)
+    self.assertEqual(
+        sampler.put_weights_on_memory_kind.call_args_list[-1].args[0],
+        "pinned_host",
+    )
+
 
 if __name__ == "__main__":
   absltest.main()
