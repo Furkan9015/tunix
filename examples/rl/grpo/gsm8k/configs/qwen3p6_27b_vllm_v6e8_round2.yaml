@@ -73,8 +73,8 @@ rl_training_config:
   compute_logps_chunk_size: 16
   checkpoint_root_directory: "/tmp/grpo_checkpoints/qwen3p6_27b_vllm_v6e8_round2"
   checkpointing_options:
-    max_to_keep: 2
-    save_interval_steps: 1
+    max_to_keep: 1
+    save_interval_steps: 100
   metrics_logging_options:
     project_name: "tunix"
     run_name: "qwen3p6_27b_vllm_v6e8_round2"
