@@ -87,12 +87,7 @@ rl_training_config:
   actor_optimizer_config:
     opt_type: "adamw"
     learning_rate: 1.0e-7
-    schedule_type: "warmup_cosine_decay_schedule"
-    init_value: 0.0
-    peak_value: 1.0e-7
-    end_value: 0.0
-    warmup_steps: 1
-    decay_steps: 1
+    schedule_type: null
     b1: 0.9
     b2: 0.99
     weight_decay: 0.01
