@@ -132,8 +132,13 @@ def _reorder_concatenated_tensor_for_sharding(
 def _packed_output_hook(split_sizes: tuple[int, ...]):
   """Create a post-align hook for tpu-inference merged output projections."""
 
-  def hook(val, *, target_value=None, **_):
+  def hook(val, *, target_value=None, tp_size=None, **_):
     n_shards = _infer_output_shards(target_value, dim=-1)
+    if n_shards <= 1 and tp_size is not None:
+      try:
+        n_shards = max(1, int(tp_size))
+      except (TypeError, ValueError):
+        n_shards = 1
     if n_shards > 1:
       val = jax.device_put(val, jax.local_devices(backend='cpu')[0])
     return _reorder_concatenated_tensor_for_sharding(

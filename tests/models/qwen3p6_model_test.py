@@ -73,6 +73,17 @@ class Qwen3P6ModelTest(absltest.TestCase):
         ], dtype=np.float32),
     )
 
+  def test_packed_projection_hook_falls_back_to_tp_size(self):
+    value = jnp.arange(12, dtype=jnp.float32).reshape(1, 12)
+    hook = mapping_vllm_jax._packed_output_hook((4, 4, 4))
+
+    result = hook(value, target_value=None, tp_size=2)
+
+    np.testing.assert_array_equal(
+        np.asarray(result),
+        np.array([[0, 1, 4, 5, 8, 9, 2, 3, 6, 7, 10, 11]], dtype=np.float32),
+    )
+
   def test_gdn_qkvz_packed_reorder_matches_qwen35_runtime_layout(self):
     key_dim = mapping_vllm_jax._LINEAR_KEY_DIM
     value_dim = mapping_vllm_jax._LINEAR_VALUE_DIM
