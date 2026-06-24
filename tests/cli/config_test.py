@@ -226,6 +226,28 @@ class ConfigTest(parameterized.TestCase):
         },
     )
 
+  def test_create_optimizer_converts_dtype_momentum(self):
+    with mock.patch.dict(os.environ, {"HF_TOKEN": "dummy"}):
+      hp = self.initialize_config([
+          "optimizer_config.opt_type=adafactor",
+          "optimizer_config.learning_rate=0.001",
+          "optimizer_config.momentum=0.9",
+          "optimizer_config.dtype_momentum=bfloat16",
+      ])
+    optimizer = hp.create_optimizer("optimizer_config")
+    opt_state = optimizer.init(
+        {"w": jax.numpy.ones((256, 256), dtype=jax.numpy.float32)}
+    )
+
+    self.assertIn(
+        jax.numpy.dtype(jax.numpy.bfloat16),
+        {
+            leaf.dtype
+            for leaf in jax.tree_util.tree_leaves(opt_state)
+            if hasattr(leaf, "dtype")
+        },
+    )
+
   @parameterized.named_parameters(
       dict(
           testcase_name="unknown_name",
@@ -285,6 +307,7 @@ class ConfigTest(parameterized.TestCase):
     self.assertTrue(callable(lr_schedule), "lr_schedule should be callable")
 
     # --- Tests for mesh config parsing and mesh creation ---
+
   @parameterized.named_parameters(
       dict(
           testcase_name="valid_1d",
