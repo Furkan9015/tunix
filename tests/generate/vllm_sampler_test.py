@@ -93,6 +93,55 @@ class VllmSamplerTest(absltest.TestCase):
   def test_vllm_sampler_server_mode(self):
     self._run_vllm_sampler(server_mode=True)
 
+  def test_generate_server_mode_uses_shallow_sampling_param_copy(self):
+
+    class FakeOutput:
+      pass
+
+    class FakeFuture:
+
+      def __init__(self, result):
+        self._result = result
+
+      def result(self):
+        return self._result
+
+    class FakeDriver:
+
+      def submit_requests(self, requests):
+        self.requests = requests
+        return [FakeFuture(FakeOutput()) for _ in requests]
+
+    class FakeSamplingParams:
+      skip_clone = False
+      stop = ("</answer>",)
+      stop_token_ids = (1,)
+      bad_words = None
+      _all_stop_token_ids = {1}
+
+      def clone(self):
+        raise AssertionError("server mode should not use vLLM deepcopy clone")
+
+    driver = FakeDriver()
+    vl_sampler = object.__new__(vllm_sampler.VllmSampler)
+    vl_sampler._driver = driver
+    vl_sampler._request_counter = iter(range(2))
+
+    sampling_params = FakeSamplingParams()
+    with mock.patch.object(vllm_sampler, "RequestOutput", FakeOutput):
+      outputs = vl_sampler._generate_server_mode(
+          prompts=[{"prompt_token_ids": [1]}, {"prompt_token_ids": [2]}],
+          sampling_params=sampling_params,
+      )
+
+    self.assertLen(outputs, 2)
+    self.assertTrue(sampling_params.skip_clone)
+    self.assertIsInstance(sampling_params.stop, list)
+    self.assertIs(driver.requests[0]["params"], sampling_params)
+    self.assertIsNot(driver.requests[1]["params"], sampling_params)
+    self.assertEqual(driver.requests[1]["params"].stop, ["</answer>"])
+    self.assertIsNot(driver.requests[1]["params"].stop, sampling_params.stop)
+
   def _run_vllm_sampler(self, server_mode, data_parallel_size: int = -1):
     tunix_model, model_config = self.load_llama3_model(
         self.repo_id, enable_lora=self.enable_lora

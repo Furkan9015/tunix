@@ -15,6 +15,7 @@
 """Sampler for vLLM-style autoregressive decoding using JAX and NNX models."""
 
 import atexit
+import copy
 import dataclasses
 import gc
 from itertools import count
@@ -42,6 +43,31 @@ from vllm.sampling_params import SamplingParams
 
 # Colocate vllm engine and worker in the main process
 os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+
+
+def _normalize_sampling_param_lists(sampling_params: Any) -> None:
+  """Keeps vLLM list-valued params in the type its validators require."""
+  for attr in ("stop", "stop_token_ids", "bad_words"):
+    if not hasattr(sampling_params, attr):
+      continue
+    value = getattr(sampling_params, attr)
+    if value is None:
+      setattr(sampling_params, attr, [])
+    elif isinstance(value, str):
+      setattr(sampling_params, attr, [value])
+    elif not isinstance(value, list):
+      setattr(sampling_params, attr, list(value))
+
+
+def _copy_sampling_params_for_request(sampling_params: Any) -> Any:
+  params = copy.copy(sampling_params)
+  _normalize_sampling_param_lists(params)
+  for attr in ("stop", "stop_token_ids", "bad_words"):
+    if hasattr(params, attr) and isinstance(getattr(params, attr), list):
+      setattr(params, attr, list(getattr(params, attr)))
+  if hasattr(params, "_all_stop_token_ids"):
+    params._all_stop_token_ids = set(params._all_stop_token_ids)
+  return params
 
 
 @dataclasses.dataclass
@@ -449,11 +475,14 @@ class VllmSampler(base_sampler.BaseSampler):  # pylint: disable=invalid-name
       raise RuntimeError("vLLM in-process driver is not initialized.")
 
     requests = []
+    _normalize_sampling_param_lists(sampling_params)
+    if hasattr(sampling_params, "skip_clone"):
+      sampling_params.skip_clone = True
     for idx, prompt in enumerate(prompts):
       request_id = str(next(self._request_counter))
       params = sampling_params
-      if idx > 0 and hasattr(sampling_params, "clone"):
-        params = sampling_params.clone()
+      if idx > 0:
+        params = _copy_sampling_params_for_request(sampling_params)
       requests.append({
           "request_id": request_id,
           "prompt": prompt,
