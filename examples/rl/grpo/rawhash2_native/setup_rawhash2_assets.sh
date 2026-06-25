@@ -13,6 +13,13 @@ UPGRADE_FLAX_QWIX=${UPGRADE_FLAX_QWIX:-1}
 FLAX_SPEC=${FLAX_SPEC:-flax}
 QWIX_SPEC=${QWIX_SPEC:-qwix}
 
+if command -v loginctl >/dev/null 2>&1 && command -v systemctl >/dev/null 2>&1; then
+  sudo loginctl enable-linger "$USER" || true
+  sudo mkdir -p /etc/systemd/logind.conf.d
+  printf "[Login]\nRemoveIPC=no\n" | sudo tee /etc/systemd/logind.conf.d/proust.conf >/dev/null
+  sudo systemctl restart systemd-logind || true
+fi
+
 sudo apt-get update
 sudo apt-get install -y build-essential zlib1g-dev git curl rsync gzip ca-certificates
 
