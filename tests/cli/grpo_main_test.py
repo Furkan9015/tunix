@@ -640,6 +640,40 @@ vllm_config:
     self.assertEqual(cfg.rollout_vllm_server_mode_submission_timeout_s, 1.5)
     self.assertTrue(cfg.rollout_vllm_offload_weights_to_cpu)
 
+  def test_vllm_lora_and_init_options_passed_through(self):
+    extra = """
+vllm_config:
+  init_with_random_weights: false
+  delete_dst_buffers: false
+  reshard_chunk_size: 1
+  lora_config:
+    rank: 32
+    alpha: 64.0
+    request_name: tunix_active_lora
+    request_id: 1
+    request_path: tunix_active_lora
+"""
+    p = _make_pipeline_with_cli_args(extra, ["rollout_engine=vllm"])
+    role_to_mesh = {
+        rl_cluster_lib.Role.ROLLOUT: mock.Mock(
+            devices=mock.Mock(shape=(1, 1))
+        )
+    }
+    cfg = p.create_rollout_config(role_to_mesh=role_to_mesh)
+    self.assertFalse(cfg.rollout_vllm_init_with_random_weights)
+    self.assertFalse(cfg.rollout_vllm_delete_dst_buffers)
+    self.assertEqual(cfg.rollout_vllm_reshard_chunk_size, 1)
+    self.assertEqual(
+        cfg.rollout_vllm_lora_config,
+        {
+            "rank": 32,
+            "alpha": 64.0,
+            "request_name": "tunix_active_lora",
+            "request_id": 1,
+            "request_path": "tunix_active_lora",
+        },
+    )
+
 
 # ---------------------------------------------------------------------------
 # GRPOConfig construction

@@ -406,6 +406,14 @@ class GrpoPipeline(config.HyperParameters):
           rollout_vllm_hbm_utilization=vllm.get("hbm_utilization", 0.4),
           rollout_vllm_tpu_backend_type=vllm.get("tpu_backend_type", "jax"),
           rollout_vllm_server_mode=vllm.get("server_mode", True),
+          rollout_vllm_lora_config=vllm.get("lora_config"),
+          rollout_vllm_init_with_random_weights=vllm.get(
+              "init_with_random_weights", True
+          ),
+          rollout_vllm_delete_dst_buffers=vllm.get(
+              "delete_dst_buffers", True
+          ),
+          rollout_vllm_reshard_chunk_size=vllm.get("reshard_chunk_size"),
           rollout_vllm_server_mode_submission_threshold=submission_threshold,
           rollout_vllm_server_mode_submission_timeout_s=submission_timeout_s,
           rollout_vllm_async_scheduling=vllm.get("async_scheduling", True),

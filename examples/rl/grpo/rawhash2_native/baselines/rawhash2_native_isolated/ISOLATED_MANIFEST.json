@@ -1,0 +1,37 @@
+{
+  "artifact": "rawhash2_native_isolated",
+  "compatible_binary": "rawhash2",
+  "source": {
+    "upstream_repo": "/home/furka/compbio/RawHash2",
+    "upstream_commit": "92366afb09df9fa791e7705414e1372f487912ed",
+    "note": "Source files were copied from the local RawHash2 working tree, including the local hdf5_tools.hpp compatibility fix."
+  },
+  "kept": {
+    "source_dir": "src",
+    "pore_model": "extern/local_kmer_models/uncalled_r1041_model_only_means.txt",
+    "license": "LICENSE"
+  },
+  "omitted": [
+    ".git",
+    "bin",
+    "build",
+    "cmake",
+    "docs",
+    "figures",
+    "live",
+    "proto",
+    "test",
+    "object files"
+  ],
+  "benchmark_build": [
+    "make",
+    "PROFILE=1",
+    "NOPOD5=1",
+    "NOHDF5=0",
+    "NOSLOW5=1"
+  ],
+  "benchmark_contract": {
+    "index": "--bp-per-sec 400 --r10 -x sensitive -t 128 -w 0 -p <pore> -d <index> <reference.fa>",
+    "map": "--bp-per-sec 400 --r10 -x sensitive -t 128 -w 0 -o <out.paf> <index> <fast5_dir>"
+  }
+}

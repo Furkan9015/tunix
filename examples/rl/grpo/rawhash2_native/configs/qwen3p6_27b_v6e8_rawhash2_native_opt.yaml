@@ -1,0 +1,213 @@
+# Qwen3.6-27B RawHash2 native RLVR case for one v6e-8 host.
+#
+# This is the single-host version of the compbio rawhash2_native_opt case. The
+# data paths intentionally match the historical /home/furka/compbio layout; run
+# setup_rawhash2_assets.sh to stage those files from GCS and point
+# /home/furka/compbio/discover at this example tree.
+
+training_mode: "grpo"
+
+model_config: &qwen3p6_27b_model
+  model_name: "qwen3.6-27b"
+  model_source: "huggingface"
+  model_id: "Qwen/Qwen3.6-27B"
+  model_path: ""
+  model_download_path: "/dev/shm/models/qwen3p6-27b"
+  intermediate_ckpt_dir: "/dev/shm/intermediate_ckpt/qwen3p6-27b"
+  rng_seed: 42
+  model_display: false
+  use_flash_attention: false
+  flash_attention_block_size: 256
+  remat_config: 3
+  dtype: "bfloat16"
+  param_dtype: "bfloat16"
+  logits_chunk_size: 16
+  lora_config: {}
+  mesh:
+    shape: "(1,8)"
+    axis_names: "('fsdp','tp')"
+    allocation_policy: "COMPACT"
+
+actor_model_config:
+  <<: *qwen3p6_27b_model
+  lora_config:
+    module_path: ".*(q_proj|k_proj|v_proj|o_proj|in_proj_qkv|in_proj_z|in_proj_a|in_proj_b|out_proj|gate_proj|up_proj|down_proj).*"
+    rank: 32
+    alpha: 64.0
+
+reference_model_config:
+  <<: *qwen3p6_27b_model
+  mesh: null
+  same_mesh_as: "actor"
+  lora_config: {}
+
+rollout_model_config:
+  <<: *qwen3p6_27b_model
+  mesh: null
+  same_mesh_as: "actor"
+
+tokenizer_config:
+  tokenizer_path: "/dev/shm/models/qwen3p6-27b"
+  tokenizer_type: "huggingface"
+  add_bos: false
+  add_eos: false
+
+data_module: "discover_compbio.tunix_data"
+data_config:
+  task: "rawhash2_native_opt"
+  num_examples: 8
+  seed: 11
+  rawhash2_prompt_archive_path: "/home/furka/qwen36_rlvr_tpu_smoke/logs/rawhash2_native_audit_qwen3p6_27b_v6e8_rawhash2_native.jsonl"
+  rawhash2_reward_audit_path: "/home/furka/qwen36_rlvr_tpu_smoke/logs/rawhash2_compbio_reward_qwen3p6_27b_v6e8_rawhash2_native.jsonl"
+  rawhash2_prompt_archive_fraction: 0.75
+  rawhash2_prompt_archive_max_chars: 6000
+  rawhash2_prompt_archive_dynamic: true
+  rawhash2_prompt_archive_warmup_examples: 8
+  rawhash2_case:
+    rawhash2_repo: "/home/furka/compbio/discover/baselines/rawhash2_native_isolated"
+    output_root: "/dev/shm/rawhash2_native_rlvr"
+    reference_fasta: "/home/furka/compbio/refs/hsapiens.fa"
+    fast5_dir: "/home/furka/compbio/fast5/hsapiens_subset800"
+    pore_model: "/home/furka/compbio/discover/baselines/rawhash2_native_isolated/extern/local_kmer_models/uncalled_r1041_model_only_means.txt"
+    truth_paf: "/home/furka/compbio/outputs/true_mappings/hsapiens_subset800_sup_v5.2.0.paf"
+    baseline_json: "/home/furka/compbio/outputs/rawhash2_native/baseline_metrics_isolated_t128_subset800_truth.json"
+    preset: "sensitive"
+    threads: 128
+    bp_per_sec: 400
+    extra_params: ["-w", "0"]
+    build_command:
+      - "make"
+      - "PROFILE=1"
+      - "NOPOD5=1"
+      - "NOHDF5=0"
+      - "NOSLOW5=1"
+      - "HDF5_INCLUDE_DIR=/home/furka/compbio/tools/hdf5-release/hdf5-1.10.11/build/include"
+      - "HDF5_LIB_DIR=/home/furka/compbio/tools/hdf5-release/hdf5-1.10.11/build/lib"
+    build_jobs: 128
+    timeout_seconds: 900
+    enable_execution: true
+    keep_workdir: false
+    require_truth_for_reward: true
+    enable_debug_feedback: false
+    debug_feedback_params: ["--output-chains"]
+    log_tail_bytes: 16384
+    min_available_memory_gb: 160.0
+    min_output_free_disk_gb: 64.0
+    allow_low_resources: false
+    benchmark_concurrency: 1
+    map_concurrency: 1
+    resource_kill_retry_attempts: 1
+
+apply_chat_template_to_dataset: true
+batch_size: 1
+num_batches: 1
+num_train_epochs: 1
+train_fraction: 1.0
+num_test_batches: 0
+
+rl_training_config:
+  eval_every_n_steps: 999
+  max_steps: 1
+  mini_batch_size: 1
+  train_micro_batch_size: 1
+  rollout_micro_batch_size: 1
+  compute_logps_micro_batch_size: 1
+  compute_logps_chunk_size: 16
+  checkpoint_root_directory: "/home/furka/qwen36_rlvr_tpu_smoke/checkpoints/rawhash2_native_opt_qwen3p6_27b_v6e8"
+  checkpointing_options:
+    max_to_keep: 1
+    save_interval_steps: 1
+  save_final_checkpoint: false
+  metrics_logging_options:
+    project_name: "discover-compbio"
+    run_name: "qwen3p6-27b-v6e8-rawhash2-native-opt"
+    log_dir: "/home/furka/qwen36_rlvr_tpu_smoke/logs/tensorboard_rawhash2_native_opt"
+    flush_every_n_steps: 1
+  profiler_options: {}
+  perf_metrics_options: {}
+  data_sharding_axis: ["fsdp"]
+  max_inflight_computations: 1
+  actor_optimizer_config:
+    opt_type: "adamw"
+    schedule_type: "warmup_cosine_decay_schedule"
+    init_value: 0.0
+    peak_value: 1.0e-6
+    end_value: 0.0
+    warmup_steps: 1
+    decay_steps: 1
+    b1: 0.9
+    b2: 0.99
+    weight_decay: 0.0
+    max_grad_norm: 0.1
+  critic_optimizer_config: null
+
+rollout_config:
+  max_prompt_length: 6912
+  total_generation_steps: 25600
+  temperature: 0.6
+  top_p: 0.95
+  top_k: 20
+  return_logprobs: false
+  rollout_vllm_sampling_kwargs:
+    thinking_token_budget: 22528
+    thinking_token_budget_schedule: [8192, 12288, 16384, 22528]
+    min_p: 0.0
+    presence_penalty: 0.0
+    repetition_penalty: 1.0
+    detokenize: true
+    stop: ["</answer>"]
+    include_stop_str_in_output: true
+    abort_unclosed_think_after_tokens: 28672
+    abort_no_answer_after_forced_reasoning_tokens: 768
+    abort_unclosed_answer_after_tokens: 8192
+    finish_after_answer_json: true
+    reasoning_budget_force_after_natural_end: true
+    forced_reasoning_after_str: "\n\n<answer>\n{\"edits\":["
+    forced_reasoning_end_str: "</think>"
+    answer_start_str: "<answer>"
+
+rollout_engine: "vllm"
+vllm_config:
+  model_version: "/dev/shm/models/qwen3p6-27b"
+  max_model_len: 32768
+  server_mode: true
+  init_with_random_weights: true
+  async_scheduling: false
+  tpu_backend_type: "jax"
+  hbm_utilization: 0.85
+  offload_weights_to_cpu: true
+  max_num_seqs: 2
+  max_num_batched_tokens: 2048
+  lora_config:
+    rank: 32
+    alpha: 64.0
+    request_name: "tunix_active_lora"
+    request_id: 1
+    request_path: "tunix_active_lora"
+  kwargs:
+    kv_cache_metrics: true
+    disable_log_stats: false
+    enable_prefix_caching: false
+    generation_config: "vllm"
+    language_model_only: true
+    dtype: "bfloat16"
+    limit_mm_per_prompt:
+      image: 0
+      video: 0
+      audio: 0
+    kv_cache_dtype: "bfloat16"
+    speculative_config: null
+sglang_jax_config: {}
+
+offload_to_cpu: false
+
+grpo_config:
+  num_generations: 2
+  num_iterations: 1
+  beta: 0.04
+  kl_loss_mode: "low_var_kl"
+  epsilon: 0.2
+
+verl_compatible: false
+reward_functions:
+  - "discover_compbio.tunix_reward"
