@@ -547,6 +547,63 @@ class UtilsTest(parameterized.TestCase):
         )
     )
 
+  def test_qwen3p6_packed_outputs_skip_generic_transpose(self):
+    """Qwen3.6 packed output projections stay in Tunix (in, out) layout."""
+    from tunix.models.qwen3p6 import mapping_vllm_jax as qwen3p6_mapping
+
+    src_state = MockState({
+        "layers.3.attn.q_proj.kernel": MockParam(
+            jnp.ones((2, 3), dtype=jnp.float32)
+        ),
+        "layers.3.attn.k_proj.kernel": MockParam(
+            jnp.ones((2, 1), dtype=jnp.float32) * 2
+        ),
+        "layers.3.attn.v_proj.kernel": MockParam(
+            jnp.ones((2, 1), dtype=jnp.float32) * 3
+        ),
+        "layers.0.linear_attn.in_proj_qkv.kernel": MockParam(
+            jnp.ones((2, 4), dtype=jnp.float32)
+        ),
+        "layers.0.linear_attn.in_proj_z.kernel": MockParam(
+            jnp.ones((2, 2), dtype=jnp.float32) * 4
+        ),
+        "layers.0.linear_attn.in_proj_b.kernel": MockParam(
+            jnp.ones((2, 1), dtype=jnp.float32) * 5
+        ),
+        "layers.0.linear_attn.in_proj_a.kernel": MockParam(
+            jnp.ones((2, 1), dtype=jnp.float32) * 6
+        ),
+        "layers.3.mlp.gate_proj.kernel": MockParam(
+            jnp.ones((2, 3), dtype=jnp.float32) * 7
+        ),
+        "layers.3.mlp.up_proj.kernel": MockParam(
+            jnp.ones((2, 3), dtype=jnp.float32) * 8
+        ),
+    })
+
+    processed = qwen3p6_mapping.preprocess_src_state(src_state)
+    flat = {".".join(keys): param.value for keys, param in processed.flat_state()}
+
+    self.assertEqual(flat["layers.3.attn.qkv_proj.kernel"].shape, (2, 5))
+    self.assertEqual(
+        flat["layers.0.linear_attn.in_proj_qkvz.kernel"].shape, (2, 6)
+    )
+    self.assertEqual(
+        flat["layers.0.linear_attn.in_proj_ba.kernel"].shape, (2, 2)
+    )
+    self.assertEqual(flat["layers.3.mlp.gate_up_proj.kernel"].shape, (2, 6))
+
+    transpose_keys = qwen3p6_mapping.VLLM_JAX_MAPPING["to_hf_transpose_keys"]
+    packed_keys = (
+        "layers.*.attn.qkv_proj.kernel",
+        "layers.*.linear_attn.in_proj_qkvz.kernel",
+        "layers.*.linear_attn.in_proj_ba.kernel",
+        "layers.*.mlp.gate_up_proj.kernel",
+    )
+    for key in packed_keys:
+      self.assertNotIn(key, transpose_keys)
+      self.assertIn(key, qwen3p6_mapping.VLLM_JAX_MAPPING["to_hf_hook_fns"])
+
   def test_verify_state_closeness(self):
     """Test verify_state_closeness function with various scenarios."""
 

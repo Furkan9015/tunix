@@ -392,12 +392,8 @@ VLLM_JAX_MAPPING: Dict[str, Any] = {
     'lora_to_hf_mappings': _lora_mappings(),
     'to_hf_transpose_keys': {
         'lm_head.kernel': (1, 0),
-        'layers.*.mlp.gate_up_proj.kernel': (1, 0),
         'layers.*.mlp.down_proj.kernel': (1, 0),
-        'layers.*.attn.qkv_proj.kernel': (1, 0),
         'layers.*.attn.o_proj.kernel': (1, 0),
-        'layers.*.linear_attn.in_proj_qkvz.kernel': (1, 0),
-        'layers.*.linear_attn.in_proj_ba.kernel': (1, 0),
         'layers.*.linear_attn.out_proj.kernel': (1, 0),
         'layers.*.linear_attn.conv1d_weight': (2, 1, 0),
     },
