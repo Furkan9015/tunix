@@ -604,21 +604,33 @@ class RLCluster:
         if other_role != role:
           self._backbone_sharing_map[role].append(other_role)
 
-  def _put_model_on_memory_kind(self, model: nnx.Module, memory_kind: str):
+  def _put_model_on_memory_kind(
+      self,
+      model: nnx.Module,
+      memory_kind: str,
+      delete_old_buffers: bool = True,
+  ):
     """Puts model on the given memory kind."""
     if memory_kind not in ["pinned_host", "device"]:
       raise ValueError(f"Unsupported memory kind. Received: {memory_kind}")
     original_variables = nnx.variables(model)
     new_variables = self._put_pytree_on_memory_kind(
-        original_variables, memory_kind
+        original_variables, memory_kind, delete_old_buffers=delete_old_buffers
     )
     nnx.update(model, new_variables)
 
   def _put_pytree_on_memory_kind(
-      self, pytree: jaxtyping.PyTree, memory_kind: str
+      self,
+      pytree: jaxtyping.PyTree,
+      memory_kind: str,
+      delete_old_buffers: bool = True,
   ) -> jaxtyping.PyTree:
     new_pytree = rl_utils.put_params_on_memory_kind(pytree, memory_kind)
-    if memory_kind == "pinned_host" and new_pytree is not pytree:
+    if (
+        delete_old_buffers
+        and memory_kind == "pinned_host"
+        and new_pytree is not pytree
+    ):
       jax.block_until_ready(new_pytree)
       for old_leaf, new_leaf in zip(
           jax.tree_util.tree_leaves(pytree),
@@ -635,9 +647,16 @@ class RLCluster:
     return new_pytree
 
   def _put_trainer_on_memory_kind(
-      self, trainer: rl_trainer.Trainer, memory_kind: str
+      self,
+      trainer: rl_trainer.Trainer,
+      memory_kind: str,
+      delete_model_old_buffers: bool = True,
   ):
-    self._put_model_on_memory_kind(trainer.model, memory_kind)
+    self._put_model_on_memory_kind(
+        trainer.model,
+        memory_kind,
+        delete_old_buffers=delete_model_old_buffers,
+    )
     optimizer_state = nnx.state(trainer.optimizer, nnx.optimizer.OptState)
     optimizer_state = self._put_pytree_on_memory_kind(
         optimizer_state, memory_kind
@@ -988,7 +1007,11 @@ class RLCluster:
           self.rollout, "offloads_weights_to_cpu", False
       )
       if rollout_offloads_weights:
-        self._put_trainer_on_memory_kind(self.actor_trainer, "pinned_host")
+        self._put_trainer_on_memory_kind(
+            self.actor_trainer,
+            "pinned_host",
+            delete_model_old_buffers=False,
+        )
         self._put_inference_model_on_memory_kind("reference", "pinned_host")
         gc.collect()
       try:
@@ -1072,7 +1095,11 @@ class RLCluster:
             self.actor_trainer
         )
         if actor_trainer_state_on_device:
-          self._put_trainer_on_memory_kind(self.actor_trainer, "pinned_host")
+          self._put_trainer_on_memory_kind(
+              self.actor_trainer,
+              "pinned_host",
+              delete_model_old_buffers=False,
+          )
           gc.collect()
 
       try:

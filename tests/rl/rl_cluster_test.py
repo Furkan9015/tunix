@@ -916,8 +916,12 @@ class RlClusterTest(parameterized.TestCase):
     ), mock.patch.object(
         rl_cluster,
         '_put_trainer_on_memory_kind',
-        side_effect=lambda trainer, memory_kind: events.append(
-            ('trainer', memory_kind)
+        side_effect=lambda trainer, memory_kind, **kwargs: events.append(
+            (
+                'trainer',
+                memory_kind,
+                kwargs.get('delete_model_old_buffers', True),
+            )
         ),
     ), mock.patch.object(
         rl_cluster,
@@ -942,11 +946,11 @@ class RlClusterTest(parameterized.TestCase):
     self.assertEqual(
         events,
         [
-            ('trainer', 'pinned_host'),
+            ('trainer', 'pinned_host', False),
             ('reference', 'device'),
             ('ref_logps', None),
             ('reference', 'pinned_host'),
-            ('trainer', rl_cluster._default_memory_kind),
+            ('trainer', rl_cluster._default_memory_kind, True),
         ],
     )
 
