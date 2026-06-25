@@ -189,6 +189,7 @@ vllm_config:
     disable_log_stats: false
     enable_prefix_caching: false
     generation_config: "vllm"
+    reasoning_parser: "qwen3"
     language_model_only: true
     dtype: "bfloat16"
     limit_mm_per_prompt:
