@@ -134,7 +134,7 @@ rl_training_config:
     peak_value: 1.0e-6
     end_value: 0.0
     warmup_steps: 1
-    decay_steps: 1
+    decay_steps: 2
     b1: 0.9
     b2: 0.99
     weight_decay: 0.0
