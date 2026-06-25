@@ -604,6 +604,59 @@ class UtilsTest(parameterized.TestCase):
       self.assertNotIn(key, transpose_keys)
       self.assertIn(key, qwen3p6_mapping.VLLM_JAX_MAPPING["to_hf_hook_fns"])
 
+  def test_qwen3p6_qkv_hook_replicates_kv_heads_for_vllm_tp(self):
+    """Qwen3.6 qkv transfer matches QKVParallelLinear KV replication."""
+    from tunix.models.qwen3p6 import mapping_vllm_jax as qwen3p6_mapping
+
+    q_width = qwen3p6_mapping._ATTN_Q_GATE_DIM
+    kv_width = qwen3p6_mapping._ATTN_KV_DIM
+    head_dim = qwen3p6_mapping._ATTN_HEAD_DIM
+    tp_size = 8
+    target_kv_width = tp_size * head_dim
+    shard_width = (q_width + 2 * target_kv_width) // tp_size
+    q_shard_width = q_width // tp_size
+
+    q_gate = jnp.arange(q_width, dtype=jnp.float32)[None, :]
+    key = jnp.repeat(
+        jnp.arange(kv_width // head_dim, dtype=jnp.float32), head_dim
+    )[None, :]
+    value = jnp.repeat(
+        jnp.arange(kv_width // head_dim, dtype=jnp.float32) + 10, head_dim
+    )[None, :]
+    source = jnp.concatenate((q_gate, key, value), axis=-1)
+
+    hook = qwen3p6_mapping.VLLM_JAX_MAPPING["to_hf_hook_fns"][
+        "layers.*.attn.qkv_proj.kernel"
+    ]
+    transformed = hook(
+        source,
+        target_shape=(1, q_width + 2 * target_kv_width),
+        target_value=source,
+        tp_size=tp_size,
+    )
+
+    self.assertEqual(transformed.shape, (1, q_width + 2 * target_kv_width))
+    for shard_idx in range(tp_size):
+      shard_start = shard_idx * shard_width
+      q_start = shard_idx * q_shard_width
+      kv_head = shard_idx // 2
+      self.assertTrue(
+          jnp.array_equal(
+              transformed[:, shard_start:shard_start + q_shard_width],
+              q_gate[:, q_start:q_start + q_shard_width],
+          )
+      )
+      key_start = shard_start + q_shard_width
+      self.assertTrue(
+          jnp.all(transformed[:, key_start:key_start + head_dim] == kv_head)
+      )
+      value_start = key_start + head_dim
+      self.assertTrue(
+          jnp.all(
+              transformed[:, value_start:value_start + head_dim] == kv_head + 10
+          )
+      )
+
   def test_verify_state_closeness(self):
     """Test verify_state_closeness function with various scenarios."""
 

@@ -27,6 +27,11 @@ MappingEntry = Tuple[str, Sharding]
 
 
 _VLLM_PREFIX = 'vllm_model.language_model.'
+_ATTN_NUM_HEADS = 24
+_ATTN_HEAD_DIM = 256
+_ATTN_NUM_KV_HEADS = 4
+_ATTN_Q_GATE_DIM = 2 * _ATTN_NUM_HEADS * _ATTN_HEAD_DIM
+_ATTN_KV_DIM = _ATTN_NUM_KV_HEADS * _ATTN_HEAD_DIM
 _LINEAR_NUM_VALUE_HEADS = 48
 _LINEAR_NUM_KEY_HEADS = 16
 _LINEAR_KEY_HEAD_DIM = 128
@@ -149,10 +154,101 @@ def _packed_output_hook(split_sizes: tuple[int, ...]):
   return hook
 
 
+def _expand_attention_kv_heads_for_target(
+    tensor: jnp.ndarray,
+    source_width: int,
+    target_width: int,
+    head_dim: int,
+    dim: int = -1,
+) -> jnp.ndarray:
+  """Repeat whole KV head blocks when vLLM TP replicates KV heads."""
+  if source_width == target_width:
+    return tensor
+  if target_width < source_width or target_width % source_width:
+    raise ValueError(
+        'Cannot expand Qwen3.6 KV projection to vLLM target width: '
+        f'{source_width=} {target_width=}'
+    )
+  if source_width % head_dim or target_width % head_dim:
+    raise ValueError(
+        'Qwen3.6 KV projection width must be a multiple of head_dim: '
+        f'{source_width=} {target_width=} {head_dim=}'
+    )
+
+  repeat_factor = target_width // source_width
+  if repeat_factor == 1:
+    return tensor
+  if dim < 0:
+    dim += tensor.ndim
+  source_heads = source_width // head_dim
+  old_shape = tensor.shape
+  new_shape = (
+      old_shape[:dim] + (source_heads, head_dim) + old_shape[dim + 1:]
+  )
+  tensor = tensor.reshape(new_shape)
+  tensor = jnp.repeat(tensor, repeat_factor, axis=dim)
+  expanded_shape = old_shape[:dim] + (target_width,) + old_shape[dim + 1:]
+  return tensor.reshape(expanded_shape)
+
+
+def _qkv_packed_output_hook(
+    val, *, target_shape=None, target_value=None, tp_size=None, **_
+):
+  """Match vLLM QKVParallelLinear layout for gated Qwen3.6 attention.
+
+  Qwen3.6 checkpoints store full-attention q/k/v as
+  [q, output_gate], [k], [v] with 4 native KV heads. In vLLM tensor parallel
+  layouts where TP exceeds the KV-head count, QKVParallelLinear replicates KV
+  heads so every TP shard receives one local KV head. Expand only K/V before
+  applying the packed output-axis reorder.
+  """
+  native_split_sizes = (_ATTN_Q_GATE_DIM, _ATTN_KV_DIM, _ATTN_KV_DIM)
+  native_width = sum(native_split_sizes)
+  if val.shape[-1] != native_width:
+    raise ValueError(
+        'Qwen3.6 qkv tensor shape does not match native split sizes: '
+        f'{val.shape=} {native_split_sizes=}'
+    )
+
+  target_width = target_shape[-1] if target_shape is not None else native_width
+  target_kv_width = target_width - _ATTN_Q_GATE_DIM
+  if target_kv_width < 0 or target_kv_width % 2:
+    raise ValueError(
+        'Qwen3.6 qkv target shape cannot be split as [q_gate, k, v]: '
+        f'{target_shape=}'
+    )
+  target_kv_width //= 2
+  target_split_sizes = (_ATTN_Q_GATE_DIM, target_kv_width, target_kv_width)
+
+  q_gate, key, value = jnp.split(
+      val,
+      (native_split_sizes[0], native_split_sizes[0] + _ATTN_KV_DIM),
+      axis=-1,
+  )
+  key = _expand_attention_kv_heads_for_target(
+      key, _ATTN_KV_DIM, target_kv_width, _ATTN_HEAD_DIM, dim=-1
+  )
+  value = _expand_attention_kv_heads_for_target(
+      value, _ATTN_KV_DIM, target_kv_width, _ATTN_HEAD_DIM, dim=-1
+  )
+  val = jnp.concatenate((q_gate, key, value), axis=-1)
+
+  n_shards = _infer_output_shards(target_value, dim=-1)
+  if n_shards <= 1 and tp_size is not None:
+    try:
+      n_shards = max(1, int(tp_size))
+    except (TypeError, ValueError):
+      n_shards = 1
+  if n_shards > 1:
+    val = jax.device_put(val, jax.local_devices(backend='cpu')[0])
+  return _reorder_concatenated_tensor_for_sharding(
+      val, target_split_sizes, n_shards, dim=-1
+  )
+
+
 TO_HF_HOOK_FNS = {
     'layers.*.mlp.gate_up_proj.kernel': _packed_output_hook((17408, 17408)),
-    # Full attention q_proj carries [q, output_gate] for Qwen3.5/3.6.
-    'layers.*.attn.qkv_proj.kernel': _packed_output_hook((12288, 1024, 1024)),
+    'layers.*.attn.qkv_proj.kernel': _qkv_packed_output_hook,
     'layers.*.linear_attn.in_proj_qkvz.kernel': _packed_output_hook((
         _LINEAR_KEY_DIM,
         _LINEAR_KEY_DIM,
