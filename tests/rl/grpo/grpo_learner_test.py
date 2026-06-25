@@ -138,6 +138,58 @@ class GRPOLearnerTest(parameterized.TestCase):
     chex.set_n_cpu_devices(num_cpus)
     print(f'Setting up test with {num_cpus} devices')
     cls.device_count = jax.device_count()
+
+  def test_build_trainer_token_window_keeps_tail_loss_and_context(self):
+    prompt_ids = np.array([
+        [0, 0, 10, 11, 12],
+        [0, 20, 21, 22, 23],
+        [0, 0, 50, 51, 52],
+    ])
+    completion_ids = np.array([
+        [30, 31, 32, 33, 34, 0],
+        [40, 41, 42, 0, 0, 0],
+        [60, 0, 0, 0, 0, 0],
+    ])
+    completion_mask = completion_ids != 0
+
+    window_prompt, window_completion, window_mask, metrics = (
+        grpo_lib._build_trainer_token_window(
+            prompt_ids,
+            completion_ids,
+            completion_mask,
+            pad_value=0,
+            train_max_model_len=6,
+            train_completion_window=2,
+        )
+    )
+
+    np.testing.assert_array_equal(
+        window_prompt,
+        np.array([
+            [12, 30, 31, 32],
+            [21, 22, 23, 40],
+            [0, 50, 51, 52],
+        ]),
+    )
+    np.testing.assert_array_equal(
+        window_completion,
+        np.array([
+            [33, 34],
+            [41, 42],
+            [60, 0],
+        ]),
+    )
+    np.testing.assert_array_equal(
+        window_mask,
+        np.array([
+            [True, True],
+            [True, True],
+            [True, False],
+        ]),
+    )
+    self.assertEqual(metrics["train_window/max_model_len"], 6.0)
+    self.assertEqual(metrics["train_window/completion_window"], 2.0)
+
   def test_iterator(self):
     class _EmptyTrainer(grpo_lib.GRPOLearner):
       """A trainer that does nothing but used to test the iterator preparation."""

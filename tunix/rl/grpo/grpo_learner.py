@@ -70,6 +70,13 @@ class GRPOConfig(algo_config_lib.AlgorithmConfig):
     epsilon: Epsilon value for clipping (𝜀 in GRPO loss in paper). Similar to
       PPO, it ensures stable updates.
     epsilon_high: Epsilon value for upper bound clipping.
+    train_max_model_len: Optional trainer-only max prompt+completion token
+      length. Rollout and reward still use the full generated response; this
+      bounds the model sequence used for policy/reference log-prob training.
+    train_completion_window: Optional number of final completion tokens to use
+      as the loss-bearing completion window when train_max_model_len is set.
+      Tokens immediately before that window, including earlier generated tokens,
+      are used as prompt/context up to the remaining budget.
     loss_algo: use GRPO or GSPO for loss computation. GRPO loss is per-batch
       normalized instead of per-response normalized as mentioned in the paper.
       For GSPO, we use gspo-token loss which is more flexible.
@@ -95,6 +102,8 @@ class GRPOConfig(algo_config_lib.AlgorithmConfig):
   beta: float = 0.04
   kl_loss_mode: str = "kl"
   epsilon: float = 0.2
+  train_max_model_len: int | None = None
+  train_completion_window: int | None = None
 
   def __post_init__(self):
     if self.num_generations <= 1:
@@ -108,9 +117,96 @@ class GRPOConfig(algo_config_lib.AlgorithmConfig):
           "loss_algo should be either grpo or gspo-token. Received: "
           f"{self.loss_algo}"
       )
+    if self.train_max_model_len is not None and self.train_max_model_len <= 0:
+      raise ValueError("train_max_model_len must be positive when set.")
+    if (
+        self.train_completion_window is not None
+        and self.train_completion_window <= 0
+    ):
+      raise ValueError("train_completion_window must be positive when set.")
+    if (
+        self.train_max_model_len is not None
+        and self.train_completion_window is not None
+        and self.train_completion_window > self.train_max_model_len
+    ):
+      raise ValueError(
+          "train_completion_window must be <= train_max_model_len."
+      )
 
 
 TGrpoConfig = TypeVar("TGrpoConfig", bound=GRPOConfig)
+
+
+def _build_trainer_token_window(
+    prompt_ids: np.ndarray,
+    completion_ids: np.ndarray,
+    completion_mask: np.ndarray,
+    pad_value: int,
+    train_max_model_len: int | None,
+    train_completion_window: int | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, float]]:
+  """Builds a bounded trainer window from full rollout tokens.
+
+  The rollout text and reward remain full length. For training, the final
+  completion tokens carry loss, while the immediately preceding tokens from the
+  full prompt+completion stream become prompt/context. This preserves a local
+  autoregressive context without compiling the full rollout sequence.
+  """
+  if train_max_model_len is None:
+    return prompt_ids, completion_ids, completion_mask, {}
+
+  batch_size = completion_ids.shape[0]
+  completion_width = train_completion_window or min(
+      train_max_model_len, completion_ids.shape[1]
+  )
+  context_width = train_max_model_len - completion_width
+
+  new_prompt_ids = np.full(
+      (batch_size, context_width), pad_value, dtype=prompt_ids.dtype
+  )
+  new_completion_ids = np.full(
+      (batch_size, completion_width), pad_value, dtype=completion_ids.dtype
+  )
+  new_completion_mask = np.zeros(
+      (batch_size, completion_width), dtype=completion_mask.dtype
+  )
+  context_lengths = []
+  loss_lengths = []
+
+  for i in range(batch_size):
+    prompt_real = prompt_ids[i][prompt_ids[i] != pad_value]
+    completion_real = completion_ids[i][completion_mask[i].astype(bool)]
+    loss_len = min(len(completion_real), completion_width)
+
+    if loss_len:
+      loss_tokens = completion_real[-loss_len:]
+      prefix_completion = completion_real[:-loss_len]
+    else:
+      loss_tokens = completion_real[:0]
+      prefix_completion = completion_real
+
+    context_tokens = np.concatenate([prompt_real, prefix_completion])
+    if context_width:
+      context_tokens = context_tokens[-context_width:]
+      if len(context_tokens):
+        new_prompt_ids[i, -len(context_tokens) :] = context_tokens
+
+    if loss_len:
+      new_completion_ids[i, :loss_len] = loss_tokens
+      new_completion_mask[i, :loss_len] = True
+
+    context_lengths.append(len(context_tokens))
+    loss_lengths.append(loss_len)
+
+  metrics = {
+      "train_window/context_mean_length": float(np.mean(context_lengths)),
+      "train_window/context_max_length": float(np.max(context_lengths)),
+      "train_window/completion_mean_length": float(np.mean(loss_lengths)),
+      "train_window/completion_max_length": float(np.max(loss_lengths)),
+      "train_window/max_model_len": float(train_max_model_len),
+      "train_window/completion_window": float(completion_width),
+  }
+  return new_prompt_ids, new_completion_ids, new_completion_mask, metrics
 
 
 class GRPOLearner(rl_learner.RLLearner[TGrpoConfig]):
@@ -250,57 +346,10 @@ class GRPOLearner(rl_learner.RLLearner[TGrpoConfig]):
         )
         for completion_ids in rollout_output.tokens
     ])
-    prompt_ids = jnp.array(rollout_output.left_padded_prompt_tokens)
+    prompt_ids = np.array(rollout_output.left_padded_prompt_tokens)
 
     # Assemble masks
-    prompt_mask = prompt_ids != pad_value
     completion_mask = np.not_equal(padded_completion_ids, pad_value)
-
-    # Convert completion_ids and completion_mask to jax arrays
-    jax_completion_ids = jnp.array(padded_completion_ids)
-    jax_completion_mask = jnp.array(completion_mask)
-
-    if self.algo_config.beta != 0.0:
-      devices = self.rl_cluster.r2m[rl_cluster_lib.Role.REFERENCE].devices
-      # TODO(yangmu): use function decorator to trace this part, same below.
-      with self.rl_cluster.perf.span(
-          "refer_inference", devices
-      ) as interval, self.rl_cluster.perf_v2.span(
-          perf_constants.REFERENCE_INFERENCE, devices, tags=perf_tags
-      ) as interval_v2:
-        ref_per_token_logps = self.rl_cluster.get_ref_per_token_logps(
-            prompt_tokens=prompt_ids,
-            completion_tokens=jax_completion_ids,
-            pad_id=pad_value,
-            eos_id=eos_value,
-            micro_batch_size=(
-                self._compute_logps_micro_batch_size
-                * self.algo_config.num_generations
-            ),
-        )
-        interval.device_end([ref_per_token_logps])
-        interval_v2.async_end([ref_per_token_logps])
-    else:
-      ref_per_token_logps = None
-    if self.algo_config.num_iterations > 1:
-      devices = self.rl_cluster.r2m[rl_cluster_lib.Role.ACTOR].devices
-      with self.rl_cluster.perf.span(
-          "old_actor_inference", devices
-      ) as interval, self.rl_cluster.perf_v2.span(
-          perf_constants.OLD_ACTOR_INFERENCE, devices, tags=perf_tags
-      ) as interval_v2:
-        old_per_token_logps = self.rl_cluster.get_old_per_token_logps(
-            prompt_tokens=prompt_ids,
-            completion_tokens=jax_completion_ids,
-            micro_batch_size=(
-                self._compute_logps_micro_batch_size
-                * self.algo_config.num_generations
-            ),
-        )
-        interval.device_end([old_per_token_logps])
-        interval_v2.async_end([old_per_token_logps])
-    else:
-      old_per_token_logps = None
 
     with self.rl_cluster.perf.span(
         "advantage_computation"
@@ -361,6 +410,68 @@ class GRPOLearner(rl_learner.RLLearner[TGrpoConfig]):
           **{k: v for k, v in training_input.items() if k != "prompts"},
       )
       self.rl_cluster.buffer_metrics(user_defined_metric, mode=mode)
+
+    prompt_ids, padded_completion_ids, completion_mask, window_metrics = (
+        _build_trainer_token_window(
+            prompt_ids,
+            padded_completion_ids,
+            completion_mask,
+            pad_value,
+            self.algo_config.train_max_model_len,
+            self.algo_config.train_completion_window,
+        )
+    )
+    if window_metrics:
+      self.rl_cluster.buffer_metrics(
+          {k: (v, np.mean) for k, v in window_metrics.items()}, mode=mode
+      )
+
+    prompt_ids = jnp.array(prompt_ids)
+    prompt_mask = prompt_ids != pad_value
+    jax_completion_ids = jnp.array(padded_completion_ids)
+    jax_completion_mask = jnp.array(completion_mask)
+
+    if self.algo_config.beta != 0.0:
+      devices = self.rl_cluster.r2m[rl_cluster_lib.Role.REFERENCE].devices
+      # TODO(yangmu): use function decorator to trace this part, same below.
+      with self.rl_cluster.perf.span(
+          "refer_inference", devices
+      ) as interval, self.rl_cluster.perf_v2.span(
+          perf_constants.REFERENCE_INFERENCE, devices, tags=perf_tags
+      ) as interval_v2:
+        ref_per_token_logps = self.rl_cluster.get_ref_per_token_logps(
+            prompt_tokens=prompt_ids,
+            completion_tokens=jax_completion_ids,
+            pad_id=pad_value,
+            eos_id=eos_value,
+            micro_batch_size=(
+                self._compute_logps_micro_batch_size
+                * self.algo_config.num_generations
+            ),
+        )
+        interval.device_end([ref_per_token_logps])
+        interval_v2.async_end([ref_per_token_logps])
+    else:
+      ref_per_token_logps = None
+    if self.algo_config.num_iterations > 1:
+      devices = self.rl_cluster.r2m[rl_cluster_lib.Role.ACTOR].devices
+      with self.rl_cluster.perf.span(
+          "old_actor_inference", devices
+      ) as interval, self.rl_cluster.perf_v2.span(
+          perf_constants.OLD_ACTOR_INFERENCE, devices, tags=perf_tags
+      ) as interval_v2:
+        old_per_token_logps = self.rl_cluster.get_old_per_token_logps(
+            prompt_tokens=prompt_ids,
+            completion_tokens=jax_completion_ids,
+            micro_batch_size=(
+                self._compute_logps_micro_batch_size
+                * self.algo_config.num_generations
+            ),
+        )
+        interval.device_end([old_per_token_logps])
+        interval_v2.async_end([old_per_token_logps])
+    else:
+      old_per_token_logps = None
 
     return TrainExample(
         prompt_ids=prompt_ids,
