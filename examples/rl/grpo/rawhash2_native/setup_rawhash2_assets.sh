@@ -9,6 +9,9 @@ DATA_PREFIX=${DATA_PREFIX:-gs://proust-data-euw4/compbio_rlvr/rawhash2_native/20
 QWEN_MODEL=${QWEN_MODEL:-Qwen/Qwen3.6-27B}
 QWEN_DIR=${QWEN_DIR:-/dev/shm/models/qwen3p6-27b}
 VENV=${VENV:-$WORK/vllm_env}
+UPGRADE_FLAX_QWIX=${UPGRADE_FLAX_QWIX:-1}
+FLAX_SPEC=${FLAX_SPEC:-flax}
+QWIX_SPEC=${QWIX_SPEC:-qwix}
 
 sudo apt-get update
 sudo apt-get install -y build-essential zlib1g-dev git curl rsync gzip ca-certificates
@@ -62,6 +65,9 @@ if [[ ! -s hdf5-1.10.11/build/lib/libhdf5.a ]] ||
 fi
 
 if [[ -x "$VENV/bin/python" ]]; then
+  if [[ "$UPGRADE_FLAX_QWIX" == "1" ]]; then
+    "$VENV/bin/python" -m pip install --upgrade --no-deps "$FLAX_SPEC" "$QWIX_SPEC"
+  fi
   "$VENV/bin/python" -m pip install --no-deps -e "$TUNIX_DIR"
   if [[ ! -s "$QWEN_DIR/model.safetensors.index.json" ]]; then
     set -a
