@@ -62,14 +62,24 @@ if [[ ! -s hdf5-1.10.11/build/lib/libhdf5.a ]] ||
 fi
 
 if [[ -x "$VENV/bin/python" ]]; then
-  "$VENV/bin/python" -m pip install -e "$TUNIX_DIR"
+  "$VENV/bin/python" -m pip install --no-deps -e "$TUNIX_DIR"
   if [[ ! -s "$QWEN_DIR/model.safetensors.index.json" ]]; then
     set -a
     [[ -f "$WORK/.hf_env" ]] && . "$WORK/.hf_env"
     set +a
-    "$VENV/bin/huggingface-cli" download "$QWEN_MODEL" \
-      --local-dir "$QWEN_DIR" \
-      --local-dir-use-symlinks False
+    if [[ -x "$VENV/bin/hf" ]]; then
+      "$VENV/bin/hf" download "$QWEN_MODEL" --local-dir "$QWEN_DIR"
+    else
+      "$VENV/bin/python" - <<PY
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="${QWEN_MODEL}",
+    local_dir="${QWEN_DIR}",
+    local_dir_use_symlinks=False,
+)
+PY
+    fi
   fi
 else
   echo "venv not found at $VENV; skipping Tunix install and model download" >&2
