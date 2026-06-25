@@ -11,10 +11,25 @@ CONFIG=${CONFIG:-$SCRIPT_DIR/configs/qwen3p6_27b_v6e8_rawhash2_native_opt.yaml}
 LOG=${LOG:-$WORK/logs/rlvr_${RUN}.log}
 COMPBIO_AUDIT=${COMPBIO_AUDIT:-$WORK/logs/rawhash2_compbio_reward_${RUN}.jsonl}
 RAWHASH_AUDIT=${RAWHASH_AUDIT:-$WORK/logs/rawhash2_native_audit_${RUN}.jsonl}
+QWEN_MODEL=${QWEN_MODEL:-Qwen/Qwen3.6-27B}
+PERSISTENT_QWEN_DIR=${PERSISTENT_QWEN_DIR:-$WORK/models/qwen3p6-27b}
+QWEN_DIR=${QWEN_DIR:-/dev/shm/models/qwen3p6-27b}
+CLEAN_RUNTIME_CACHE=${CLEAN_RUNTIME_CACHE:-0}
+
+if [[ "$CLEAN_RUNTIME_CACHE" == "1" ]]; then
+  rm -rf \
+    "$QWEN_DIR" \
+    "/dev/shm/compbio_vllm_root_${RUN}" \
+    "/dev/shm/compbio_vllm_xla_${RUN}" \
+    /dev/shm/compbio_tmp \
+    /dev/shm/rawhash2_native_rlvr
+fi
 
 mkdir -p \
   "$WORK/logs" \
   "$WORK/cache/jax_compile" \
+  "$PERSISTENT_QWEN_DIR" \
+  "$QWEN_DIR" \
   "/dev/shm/compbio_vllm_root_${RUN}" \
   "/dev/shm/compbio_vllm_xla_${RUN}" \
   /dev/shm/compbio_tmp \
@@ -39,6 +54,36 @@ done
 set -a
 [[ -f "$WORK/.hf_env" ]] && . "$WORK/.hf_env"
 set +a
+
+download_qwen_model() {
+  local target="$1"
+  mkdir -p "$target"
+  if [[ -s "$target/model.safetensors.index.json" ]]; then
+    echo "model exists, skipping: $target"
+    return 0
+  fi
+
+  if [[ -x "$VENV/bin/hf" ]]; then
+    "$VENV/bin/hf" download "$QWEN_MODEL" --local-dir "$target"
+  else
+    "$VENV/bin/python" - <<PY
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="${QWEN_MODEL}",
+    local_dir="${target}",
+    local_dir_use_symlinks=False,
+)
+PY
+  fi
+}
+
+if [[ ! -s "$QWEN_DIR/model.safetensors.index.json" ]]; then
+  download_qwen_model "$PERSISTENT_QWEN_DIR"
+  if [[ "$PERSISTENT_QWEN_DIR" != "$QWEN_DIR" ]]; then
+    rsync -a --delete "$PERSISTENT_QWEN_DIR"/ "$QWEN_DIR"/
+  fi
+fi
 
 export HF_TOKEN="${HF_TOKEN:-}"
 export PYTHONPATH="$SCRIPT_DIR:$TUNIX_DIR:$TPU_INFERENCE_DIR:${PYTHONPATH:-}"
