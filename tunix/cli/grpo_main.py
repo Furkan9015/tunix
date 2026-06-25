@@ -311,6 +311,20 @@ class GrpoPipeline(config.HyperParameters):
       )
 
     # Engine-specific extras
+    if engine == "vllm":
+      vllm = self._config_mapping("vllm_config")
+      max_model_len = vllm.get("max_model_len")
+      if max_model_len is not None:
+        if kv_cache_size and max_model_len < kv_cache_size:
+          raise ValueError(
+              "vllm_config.max_model_len must be at least "
+              "rollout_config.max_prompt_length + "
+              "rollout_config.total_generation_steps + 256; got "
+              f"{max_model_len} < {kv_cache_size}."
+          )
+        kv_cache_size = max_model_len
+        filtered["kv_cache_size"] = max_model_len
+
     extra = self._rollout_engine_extra(
         engine,
         kv_cache_size,

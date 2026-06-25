@@ -572,6 +572,54 @@ verl_compatible: false
     cfg = p.create_rollout_config()
     self.assertEqual(cfg.kv_cache_size, 256 + 512 + 256)
 
+  def test_vllm_max_model_len_overrides_kv_cache(self):
+    extra = """
+grpo_config:
+  num_generations: 2
+  num_iterations: 1
+  beta: 0.0
+  epsilon: 0.2
+data_source: "tfds"
+dataset_name: "gsm8k"
+tfds_download: false
+reward_functions: []
+verl_compatible: false
+vllm_config:
+  max_model_len: 32768
+"""
+    p = _make_pipeline_with_cli_args(extra, ["rollout_engine=vllm"])
+    role_to_mesh = {
+        rl_cluster_lib.Role.ROLLOUT: mock.Mock(
+            devices=mock.Mock(shape=(1, 1))
+        )
+    }
+    cfg = p.create_rollout_config(role_to_mesh=role_to_mesh)
+    self.assertEqual(cfg.kv_cache_size, 32768)
+
+  def test_vllm_max_model_len_rejects_underallocation(self):
+    extra = """
+grpo_config:
+  num_generations: 2
+  num_iterations: 1
+  beta: 0.0
+  epsilon: 0.2
+data_source: "tfds"
+dataset_name: "gsm8k"
+tfds_download: false
+reward_functions: []
+verl_compatible: false
+vllm_config:
+  max_model_len: 512
+"""
+    p = _make_pipeline_with_cli_args(extra, ["rollout_engine=vllm"])
+    role_to_mesh = {
+        rl_cluster_lib.Role.ROLLOUT: mock.Mock(
+            devices=mock.Mock(shape=(1, 1))
+        )
+    }
+    with self.assertRaisesRegex(ValueError, "max_model_len"):
+      p.create_rollout_config(role_to_mesh=role_to_mesh)
+
   def test_vllm_submission_threshold_passed_through(self):
     extra = """
 vllm_config:
