@@ -16,7 +16,7 @@ model_config: &qwen3p6_27b_model
   intermediate_ckpt_dir: "/dev/shm/intermediate_ckpt/qwen3p6-27b"
   rng_seed: 42
   model_display: false
-  use_flash_attention: false
+  use_flash_attention: true
   flash_attention_block_size: 256
   remat_config: 3
   dtype: "bfloat16"
@@ -24,7 +24,7 @@ model_config: &qwen3p6_27b_model
   logits_chunk_size: 16
   lora_config: {}
   mesh:
-    shape: "(1,8)"
+    shape: "(2,4)"
     axis_names: "('fsdp','tp')"
     allocation_policy: "COMPACT"
 
@@ -176,6 +176,8 @@ vllm_config:
   tpu_backend_type: "jax"
   hbm_utilization: 0.85
   offload_weights_to_cpu: true
+  tensor_parallel_size: 8
+  data_parallel_size: 1
   max_num_seqs: 2
   max_num_batched_tokens: 2048
   lora_config:

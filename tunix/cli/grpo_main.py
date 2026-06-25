@@ -418,9 +418,12 @@ class GrpoPipeline(config.HyperParameters):
           rollout_vllm_server_mode_submission_timeout_s=submission_timeout_s,
           rollout_vllm_async_scheduling=vllm.get("async_scheduling", True),
           tensor_parallel_size=(
-              rollout_shape[1] if len(rollout_shape) > 1 else 1
+              vllm.get(
+                  "tensor_parallel_size",
+                  rollout_shape[1] if len(rollout_shape) > 1 else 1,
+              )
           ),
-          data_parallel_size=rollout_shape[0],
+          data_parallel_size=vllm.get("data_parallel_size", rollout_shape[0]),
           rollout_vllm_max_num_seqs=max_num_seqs,
           rollout_vllm_max_num_batched_tokens=max_batched_tokens,
           rollout_vllm_offload_weights_to_cpu=vllm.get(
