@@ -50,6 +50,31 @@ MetricFn = Callable[..., rl_cluster_lib.MetricsT]
 TConfig = TypeVar("TConfig", bound=algo_config_lib.AlgorithmConfig)
 
 
+def _repeat_batch_rows(
+    example: TrainingInputT, sample_repeat: int
+) -> TrainingInputT:
+  """Repeats each row in a training batch along the leading batch axis."""
+  if sample_repeat == 1:
+    return example
+  return {
+      key: _repeat_value_rows(value, sample_repeat)
+      for key, value in example.items()
+  }
+
+
+def _repeat_value_rows(value: Any, sample_repeat: int) -> Any:
+  if isinstance(value, list):
+    return [item for item in value for _ in range(sample_repeat)]
+  if isinstance(value, tuple):
+    return tuple(item for item in value for _ in range(sample_repeat))
+  if isinstance(value, dict):
+    return {
+        key: _repeat_value_rows(child_value, sample_repeat)
+        for key, child_value in value.items()
+    }
+  return np.repeat(value, sample_repeat, axis=0)
+
+
 class RLLearner(abc.ABC, Generic[TConfig]):
   """Base class that should be extended by specific RL algorithms."""
 
@@ -404,10 +429,7 @@ class RLLearner(abc.ABC, Generic[TConfig]):
         accumulated_samples_num += cur_batch_size
         consumed_steps += 1
 
-        example = jax.tree.map(
-            lambda x: np.repeat(x, sample_repeat, axis=0),
-            example,
-        )  # [B] -> [B * G]
+        example = _repeat_batch_rows(example, sample_repeat)  # [B] -> [B * G]
 
         micro_batches.append(example)
         # Compute trajectory ids for the current batch.

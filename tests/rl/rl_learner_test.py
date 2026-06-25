@@ -5,6 +5,7 @@ from unittest import mock
 from absl.testing import absltest
 from absl.testing import parameterized
 from flax import nnx
+import numpy as np
 import optax
 from tunix.rl import algorithm_config as algo_config_lib
 from tunix.rl import rl_cluster as rl_cluster_lib
@@ -34,6 +35,19 @@ class DummyLearner(rl_learner.RLLearner[DummyConfig]):
 
 
 class RLLearnerTest(parameterized.TestCase):
+
+  def test_repeat_batch_rows_repeats_prompt_rows(self):
+    example = {
+        'prompts': ['p0', 'p1'],
+        'answer_json': ['a0', 'a1'],
+        'ids': np.array([10, 11]),
+    }
+
+    repeated = rl_learner._repeat_batch_rows(example, 2)
+
+    self.assertEqual(repeated['prompts'], ['p0', 'p0', 'p1', 'p1'])
+    self.assertEqual(repeated['answer_json'], ['a0', 'a0', 'a1', 'a1'])
+    np.testing.assert_array_equal(repeated['ids'], np.array([10, 10, 11, 11]))
 
   @parameterized.named_parameters(
       ('1', None, None, None, None, [32, 32], False),
