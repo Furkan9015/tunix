@@ -210,8 +210,8 @@ grpo_config:
   beta: 0.04
   kl_loss_mode: "low_var_kl"
   epsilon: 0.2
-  train_max_model_len: 4096
-  train_completion_window: 1024
+  train_max_model_len: 2048
+  train_completion_window: 512
 
 verl_compatible: false
 reward_functions:
