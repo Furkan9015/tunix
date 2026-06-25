@@ -82,6 +82,26 @@ class Role(enum.Enum):
   ROLLOUT = "rollout"
 
 
+def _normalize_prompt_text(prompt: Any) -> str:
+  """Converts common singleton prompt containers to a plain string."""
+  if isinstance(prompt, str):
+    return prompt
+  if isinstance(prompt, bytes):
+    return prompt.decode("utf-8")
+  if isinstance(prompt, np.ndarray):
+    if prompt.shape == ():
+      return _normalize_prompt_text(prompt.item())
+    if prompt.size == 1:
+      return _normalize_prompt_text(prompt.reshape(-1)[0])
+  if isinstance(prompt, (list, tuple)) and len(prompt) == 1:
+    return _normalize_prompt_text(prompt[0])
+  shape = getattr(prompt, "shape", None)
+  raise TypeError(
+      "Prompt must be a string or singleton string container after chat "
+      f"templating. Got type={type(prompt)!r}, shape={shape!r}."
+  )
+
+
 @dataclasses.dataclass(slots=True, kw_only=True)
 class RLTrainingConfig(peft_trainer.TrainingConfig):
   """RLTraining config.
@@ -975,6 +995,9 @@ class RLCluster:
     else:
       string_prompts = prompts  # pytype: disable=annotation-type-mismatch
 
+    string_prompts = [
+        _normalize_prompt_text(prompt) for prompt in string_prompts
+    ]
     if len(string_prompts) == 0:
       raise ValueError("Cannot generate from an empty list of prompts.")
     micro_batch_size = micro_batch_size or len(string_prompts)

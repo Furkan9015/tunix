@@ -327,6 +327,33 @@ class RlClusterTest(parameterized.TestCase):
     called_prompts = rl_cluster.rollout.generate.call_args[0][0]
     self.assertEqual(called_prompts, ['formatted prompt'])
 
+  def test_generate_normalizes_numpy_singleton_prompts(self):
+    rl_cluster = self._create_test_rl_cluster(
+        'vanilla',
+        base_rollout.RolloutConfig(
+            max_tokens_to_generate=10,
+            max_prompt_length=256,
+            kv_cache_size=1024,
+        ),
+    )
+    rl_cluster.rollout.generate = mock.MagicMock(
+        return_value=base_rollout.RolloutOutput(
+            text=['generated text'],
+            logits=np.zeros((1, 1, 1)),
+            tokens=np.zeros((1, 1)),
+            left_padded_prompt_tokens=np.zeros((1, 1)),
+            logprobs=None,
+        )
+    )
+
+    rl_cluster.generate(
+        prompts=np.array([['rawhash2 prompt']], dtype=object),
+        mode=rl_cluster_lib.Mode.EVAL,
+    )
+
+    called_prompts = rl_cluster.rollout.generate.call_args[0][0]
+    self.assertEqual(called_prompts, ['rawhash2 prompt'])
+
   def _create_test_rl_cluster(
       self,
       rollout_engine: str,
